@@ -1,0 +1,64 @@
+{
+  "name": "@dsh-external/dsh-anatomy",
+  "version": "0.10.0",
+  "description": "自由二维工程画板：用自然语言与数学描述工程，点击任意图元读写程序映射，支持源码反查、版本化修改和强校验。",
+  "type": "module",
+  "main": "./lib/index.js",
+  "files": [
+    "lib",
+    "skills",
+    "cordis.patch.yml",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE",
+    "examples",
+    "docs",
+    "scripts",
+    ".codex-plugin",
+    ".mcp.json"
+  ],
+  "license": "MIT",
+  "keywords": [
+    "dsh-plugin",
+    "deepseek-harness",
+    "agent-skill",
+    "anatomy",
+    "human-ai-co-reading",
+    "natural-language-structure"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": ">=4.0.0-rc <5",
+    "@deepseek-ai/dsh-tools": ">=0.1.5-rc.2 <0.2.0",
+    "@deepseek-ai/dsh-skill": ">=0.1.5-rc.2 <0.2.0"
+  },
+  "peerDependenciesMeta": {
+    "@deepseek-ai/dsh-tools": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-skill": {
+      "optional": true
+    }
+  },
+  "scripts": {
+    "test": "node test/e2e.mjs && node --test test/regressions.mjs test/co-reading.mjs test/semantics.mjs test/board.mjs test/preview.mjs test/reading.mjs test/versions.mjs test/layout.mjs test/mcp.mjs && node test/render-smoke.mjs",
+    "serve": "python3 scripts/serve_board.py",
+    "test:ocr": "python3 -m unittest discover -s test -p test_handwriting.py",
+    "mcp": "node scripts/mcp-server.mjs"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/bba686593-cloud/dsh-anatomy.git"
+  },
+  "homepage": "https://github.com/bba686593-cloud/dsh-anatomy#readme",
+  "bugs": {
+    "url": "https://github.com/bba686593-cloud/dsh-anatomy/issues"
+  }
+}

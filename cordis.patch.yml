@@ -1,0 +1,15 @@
+# dsh-anatomy bundle 层：插件行很薄，17 个 anatomy_* 工具与 anatomy-authoring 技能
+# 都在 lib/index.js 的 apply() 内注册（ctx.tools.register / ctx.skills.register）。
+# 可选配置：
+#   rootDir    解剖体存放根目录（默认 "."，即会话工作区）
+#   lang       解剖体主语言 zh | en（默认 zh；人类阅读面只写一种语言）
+#   digestFile AI 摘要的文件名（默认 DIGEST.md，由 anatomy_digest 写入）
+- insert:
+    - id: dsh-anatomy
+      name: '@dsh-external/dsh-anatomy'
+      config:
+        rootDir: .
+        lang: zh
+        # strict: true —— 共读质量类问题（缺一句话、没写边界、锚点漂移…）与结构错误同级，
+        # 一样挡住写入与出图；设 false 可只当提醒。
+        strict: true

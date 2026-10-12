@@ -1,0 +1,5 @@
+{
+  "name": "anatomy-local",
+  "interface": { "displayName": "Anatomy 本地开发" },
+  "plugins": [{ "name": "anatomy", "source": { "source": "local", "path": "./" }, "policy": { "installation": "AVAILABLE", "authentication": "ON_INSTALL" }, "category": "Productivity" }]
+}

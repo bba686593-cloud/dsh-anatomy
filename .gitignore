@@ -1,0 +1,12 @@
+node_modules/
+*.tmp
+.DS_Store
+# 只忽略仓库根下由插件生成的解剖数据目录（不加斜杠锚定会连 skills/anatomy-authoring/ 一起吞掉）
+/anatomy-*/
+receipt.json
+
+.venv-ocr/
+.cache/
+__pycache__/
+
+.anatomy-runtime/
