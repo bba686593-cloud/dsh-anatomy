@@ -37,11 +37,11 @@ test('连线上的数学表达在画布可见',()=>{const b=board();b.elements[2
 
 test('公式库覆盖分式微积分矩阵概率逻辑工程关系，全部真实排版',()=>{let count=0;for(const [category,entries] of FORMULA_GROUPS){assert.ok(entries.length>=6);for(const [name,source] of entries){const result=formulaMarkup(source,katex);assert.equal(result.error,null,category+':'+name);assert.match(result.html,/<math/);count++}}assert.ok(count>=40);assert.ok(MATH_SYMBOL_GROUPS.length>=4);assert.match(formulaMarkup(String.raw`\frac{x^2}{\sqrt{y}}`,katex).html,/<mfrac>/);assert.match(formulaMarkup(String.raw`\begin{bmatrix}a&b\\c&d\end{bmatrix}`,katex).html,/<mtable[ >]/)})
 test('公式解析错误有可读回退，不允许公式加载远程资源或执行程序',()=>{assert.ok(formulaMarkup(String.raw`\frac{a`,katex).error);const result=formulaMarkup(String.raw`\href{javascript:alert(1)}{x}`,katex);assert.ok(!result.html.includes('href="javascript:'));assert.ok(!formulaMarkup(String.raw`\includegraphics{https://example.com/x.png}`,katex).html.includes('<img'));assert.ok(formulaMarkup('x'.repeat(10001),katex).error)})
-test('公式编辑确认后更新对应图元，保留实现映射并可撤销',()=>{const r=runtime(board());r.api.select('a');r.api.math.openFormulaLibrary();assert.equal(r.node('formula-dialog').open,true);r.node('formula-input').value=String.raw`\int_0^1 x^2\,\mathrm{d}x`;r.api.math.applyFormula();assert.equal(r.api.board.elements[0].math,r.node('formula-input').value);assert.equal(r.api.board.elements[0].implementation.code,'return input;');r.api.undo();assert.equal(r.api.board.elements[0].math,'y = f(x)')})
+test('公式编辑确认后更新对应图元，保留实现映射并可撤销',()=>{const r=runtime(board());r.api.select('a');r.api.math.openFormulaLibrary({mode:'edit',expression:'primary'});assert.equal(r.node('formula-dialog').open,true);r.node('formula-input').value=String.raw`\int_0^1 x^2\,\mathrm{d}x`;r.api.math.applyFormula();assert.equal(r.api.board.elements[0].math,r.node('formula-input').value);assert.equal(r.api.board.elements[0].implementation.code,'return input;');r.api.undo();assert.equal(r.api.board.elements[0].math,'y = f(x)')})
 test('手写结果经校对确认才写入，保留原笔迹、程序表达和撤销能力',()=>{const r=runtime(board());r.api.select('a');r.node('ink-result').value='接收请求后检查输入';r.node('ink-destination').value='new';const before=r.api.board.elements.length;assert.equal(before,3);r.api.math.applyInkResult();assert.equal(r.api.board.elements.length,4);assert.equal(r.api.board.elements[3].text,'接收请求后检查输入');assert.equal(r.api.board.elements[3].handwriting.reviewed,true);assert.equal(r.api.board.elements[0].implementation.code,'return input;');r.api.undo();assert.equal(r.api.board.elements.length,3);r.node('ink-result').value='const x = 1';r.api.math.applyInkResult();assert.equal(r.api.board.elements.length,3)})
 
 
-test('已确认的手写图元能重新打开原笔迹并继续编辑，异常笔迹不进入画板',()=>{const b=board();b.elements[0].handwriting={mode:'math',reviewed:true,strokes:[[[20,30],[60,80]]],candidate:{text:'x',engine:'test'},sourceElements:[]};const r=runtime(b);r.api.select('a');r.api.math.openHandwriting();assert.equal(r.api.math.mode,'math');assert.equal(JSON.stringify(r.api.math.strokes),JSON.stringify(b.elements[0].handwriting.strokes));assert.equal(r.node('ink-destination').value,'selected');r.node('ink-result').value='x^2';r.api.math.applyInkResult();assert.equal(r.api.board.elements.length,3);assert.equal(r.api.board.elements[0].math,'x^2');assert.equal(r.api.board.elements[0].handwriting.candidate.text,'x');assert.equal(r.api.board.elements[0].implementation.code,'return input;');b.elements[0].handwriting.strokes=[[['bad',20]]];const bad=runtime(b);bad.api.select('a');bad.api.math.openHandwriting();assert.equal(bad.api.math.strokes.length,0)})
+test('已确认的手写图元能重新打开原笔迹并继续编辑，异常笔迹不进入画板',()=>{const b=board();b.elements[0].handwriting={mode:'math',reviewed:true,strokes:[[[20,30],[60,80]]],candidate:{text:'x',engine:'test'},sourceElements:[]};const r=runtime(b);r.api.select('a');r.api.math.openHandwriting();assert.equal(r.api.math.mode,'math');assert.equal(JSON.stringify(r.api.math.strokes),JSON.stringify(b.elements[0].handwriting.strokes));assert.equal(r.node('ink-destination').value,'edit:primary');r.node('ink-result').value='x^2';r.api.math.applyInkResult();assert.equal(r.api.board.elements.length,3);assert.equal(r.api.board.elements[0].math,'x^2');assert.equal(r.api.board.elements[0].handwriting.candidate.text,'x');assert.equal(r.api.board.elements[0].implementation.code,'return input;');b.elements[0].handwriting.strokes=[[['bad',20]]];const bad=runtime(b);bad.api.select('a');bad.api.math.openHandwriting();assert.equal(bad.api.math.strokes.length,0)})
 
 
 test('连接检测兼容没有超时快捷接口的浏览器，断线后可以恢复',async()=>{let online=false;const r=runtime(board(),{globals:{AbortSignal:{},fetch:async()=>{if(!online)throw new TypeError('Failed to fetch');return {ok:true,json:async()=>({service:'anatomy-handwriting',ready:true})}}}});await r.api.math.checkInkService();assert.match(r.node('ink-service').textContent,/重新连接/);online=true;await r.api.math.checkInkService();assert.match(r.node('ink-service').textContent,/已就绪/);assert.equal(r.node('ink-reconnect').disabled,false)})
@@ -59,3 +59,117 @@ test('导读引用和人读语言必须通过检查，删除图元清理步骤�
 })
 
 test('自由布局选择不被刷新状态覆盖，撤销恢复自动布局',()=>{const r=runtime(board());r.node('manual-layout').checked=true;r.fire('manual-layout','change');assert.equal(r.api.board.layout.mode,'manual');assert.equal(r.node('manual-layout').checked,true);r.api.undo();assert.equal(r.node('manual-layout').checked,false)})
+
+
+test('公式库默认追加，逐条编辑与独立新建均保留原有表达和程序映射',()=>{
+  const r=runtime(board());r.api.select('a');r.api.math.openFormulaLibrary();
+  assert.equal(r.node('formula-operation').value,'append');assert.equal(r.node('formula-input').value,'');
+  r.node('formula-input').value='z = x + y';r.fire('formula-apply','click');
+  const first=r.api.board.elements[0],id=first.mathExpressions[0].id;
+  assert.equal(first.math,'y = f(x)');assert.equal(first.mathExpressions[0].value,'z = x + y');
+  assert.equal(first.implementation.code,'return input;');assert.ok(r.node('world').innerHTML.includes('data-expression="'+id+'"'));
+  r.api.math.openFormulaLibrary({mode:'edit',expression:id});assert.equal(r.node('formula-input').value,'z = x + y');
+  r.node('formula-input').value='z = x - y';r.fire('formula-apply','click');
+  assert.equal(r.api.board.elements[0].mathExpressions[0].id,id);assert.equal(r.api.board.elements[0].mathExpressions[0].value,'z = x - y');
+  assert.equal(r.api.board.elements[0].math,'y = f(x)');r.fire('undo','click');assert.equal(r.api.board.elements[0].mathExpressions[0].value,'z = x + y');
+  r.fire('redo','click');assert.equal(r.api.board.elements[0].mathExpressions[0].value,'z = x - y');
+  r.api.math.openFormulaLibrary({mode:'new'});r.node('formula-input').value='a = b';r.fire('formula-apply','click');
+  assert.equal(r.api.board.elements.length,4);assert.equal(r.api.board.elements[3].math,'a = b');assert.equal(r.api.board.elements[0].mathExpressions[0].value,'z = x - y');
+  r.fire('undo','click');assert.equal(r.api.board.elements.length,3);r.fire('redo','click');assert.equal(r.api.board.elements.length,4)
+})
+test('模板插入保留编辑草稿，关闭和失效目标不覆盖原公式',()=>{
+  const r=runtime(board());r.api.select('a');r.api.math.openFormulaLibrary({mode:'edit',expression:'primary'});
+  const input=r.node('formula-input');input.selectionStart=1;input.selectionEnd=1;
+  r.fire('formula-templates','click',{target:{closest:()=>({dataset:{template:'0'}})}});
+  assert.ok(input.value.startsWith('y'));assert.ok(input.value.endsWith(' = f(x)'));assert.equal(r.api.board.elements[0].math,'y = f(x)');
+  r.fire('formula-close','click');assert.equal(r.api.board.elements[0].math,'y = f(x)');
+  r.api.math.openFormulaLibrary({mode:'edit',expression:'primary'});input.value='y = x';r.api.change(()=>r.api.board.elements[0].math='y = 2x');
+  r.fire('formula-apply','click');assert.equal(r.api.board.elements[0].math,'y = 2x');assert.match(r.node('formula-feedback').textContent,/已变化/)
+})
+test('手写数学可追加或明确编辑单条，原公式与原笔迹均保留',()=>{
+  const b=board();b.elements[0].handwriting={mode:'math',reviewed:true,strokes:[[[10,10],[20,20]]]};
+  const r=runtime(b);r.api.select('a');r.api.math.openHandwriting();r.node('ink-destination').value='append';r.node('ink-result').value='z = x + 1';r.fire('ink-apply','click');
+  const first=r.api.board.elements[0],id=first.mathExpressions[0].id;
+  assert.equal(first.math,'y = f(x)');assert.equal(first.mathExpressions[0].value,'z = x + 1');
+  assert.equal(JSON.stringify(first.handwriting.strokes),JSON.stringify(b.elements[0].handwriting.strokes));assert.equal(first.mathExpressions[0].handwriting.reviewed,true);
+  r.api.math.openHandwriting();r.node('ink-destination').value='edit:'+id;r.node('ink-result').value='z = x + 2';r.fire('ink-apply','click');
+  assert.equal(r.api.board.elements[0].mathExpressions[0].value,'z = x + 2');assert.equal(r.api.board.elements[0].math,'y = f(x)');
+  r.fire('undo','click');assert.equal(r.api.board.elements[0].mathExpressions[0].value,'z = x + 1');r.fire('redo','click');assert.equal(r.api.board.elements[0].mathExpressions[0].value,'z = x + 2')
+})
+test('字段连续输入可立即全局撤销和重做，新输入立即取消重做分支',()=>{
+  const r=runtime(board());r.api.select('a');const input=value=>r.fire('inspector','input',{target:{dataset:{field:'text'},value,type:'textarea'}});
+  input('第一次修改');input('第二次修改');assert.equal(r.node('undo').disabled,false);r.fire('undo','click');assert.equal(r.api.board.elements[0].text,'处理输入');
+  assert.equal(r.node('redo').disabled,false);r.fire('redo','click');assert.equal(r.api.board.elements[0].text,'第二次修改');
+  r.fire('undo','click');input('新的修改分支');assert.equal(r.node('redo').disabled,true);r.fire('redo','click');assert.equal(r.api.board.elements[0].text,'新的修改分支');
+  r.fire('undo','click');assert.equal(r.api.board.elements[0].text,'处理输入')
+})
+test('拖动绘制期间全局撤销终止在途操作，后续指针事件安全且可重做',()=>{
+  const r=runtime(board());r.api.setTool('rect');r.fire('surface','pointerdown',ev(100,100));r.fire('surface','pointermove',ev(250,220));
+  assert.equal(r.api.board.elements.length,4);const created=JSON.stringify(r.api.board.elements[3]);
+  r.callbacks.get('keydown')({key:'z',ctrlKey:true,target:{},preventDefault(){}});assert.equal(r.api.board.elements.length,3);
+  r.fire('surface','pointermove',ev(300,300));r.fire('surface','pointerup',ev(300,300));assert.equal(r.api.board.elements.length,3);
+  r.fire('redo','click');assert.equal(JSON.stringify(r.api.board.elements[3]),created)
+})
+test('从自由布局切换自动排布只产生一个可撤销的全局步骤',()=>{
+  const b=board();b.layout={mode:'manual'};b.elements[1].x=20;const r=runtime(b),before=JSON.stringify(r.api.board);
+  r.node('manual-layout').checked=false;r.fire('manual-layout','change');assert.equal(r.api.board.layout.mode,'auto');assert.notEqual(JSON.stringify(r.api.board),before);
+  r.fire('undo','click');assert.equal(JSON.stringify(r.api.board),before);assert.equal(r.node('undo').disabled,true);r.fire('redo','click');assert.equal(r.api.board.layout.mode,'auto')
+})
+
+test('向中文手写部位追加主公式保留中文笔迹，并能继续编辑独立数学笔迹',()=>{
+  const b=board();b.elements[0].math='';b.elements[0].handwriting={mode:'text',reviewed:true,strokes:[[[10,10],[20,20]]],candidate:{text:'处理输入',engine:'text-test'}};
+  const original=JSON.stringify(b.elements[0].handwriting),r=runtime(b);r.api.select('a');r.api.math.openHandwriting();r.fire('ink-mode-math','click');r.fire('ink-clear','click');
+  r.fire('ink-pad','pointerdown',ev(100,100));r.fire('ink-pad','pointermove',ev(180,150));r.fire('ink-pad','pointerup',ev(180,150));const strokes=JSON.stringify(r.api.math.strokes);
+  r.node('ink-destination').value='append';r.node('ink-result').value='y = x + 1';r.fire('ink-apply','click');
+  assert.equal(r.api.board.elements[0].math,'y = x + 1');assert.equal(JSON.stringify(r.api.board.elements[0].handwriting),original);
+  assert.equal(r.api.board.elements[0].mathHandwriting.mode,'math');assert.equal(JSON.stringify(r.api.board.elements[0].mathHandwriting.strokes),strokes);
+  r.api.math.openHandwriting({expression:'primary'});assert.equal(r.node('ink-destination').value,'edit:primary');assert.equal(r.node('ink-result').value,'y = x + 1');assert.equal(JSON.stringify(r.api.math.strokes),strokes);
+  r.node('ink-result').value='y = x + 2';r.fire('ink-apply','click');assert.equal(r.api.board.elements[0].math,'y = x + 2');assert.equal(JSON.stringify(r.api.board.elements[0].handwriting),original);
+  r.fire('undo','click');assert.equal(r.api.board.elements[0].math,'y = x + 1');assert.equal(JSON.stringify(r.api.board.elements[0].handwriting),original)
+})
+
+test('追加表达式可恢复自身笔迹与识别结果继续手写，不混用主公式笔迹',()=>{
+  const b=board();b.elements[0].handwriting={mode:'math',reviewed:true,strokes:[[[10,10],[20,20]]],candidate:{text:'y = f(x)',engine:'primary-test'}};
+  b.elements[0].mathExpressions=[{id:'extra',value:'z = x + 1',handwriting:{mode:'math',reviewed:true,strokes:[[[100,100],[200,200]]],candidate:{text:'z = x + 1',engine:'extra-test'}}}];
+  const primary=JSON.stringify(b.elements[0].handwriting),r=runtime(b);r.api.select('a');r.api.math.openHandwriting({expression:'extra'});
+  assert.equal(r.api.math.mode,'math');assert.equal(r.node('ink-destination').value,'edit:extra');assert.equal(r.node('ink-result').value,'z = x + 1');assert.equal(JSON.stringify(r.api.math.strokes),JSON.stringify(b.elements[0].mathExpressions[0].handwriting.strokes));
+  r.node('ink-result').value='z = x + 2';r.fire('ink-apply','click');assert.equal(r.api.board.elements[0].mathExpressions[0].value,'z = x + 2');assert.equal(r.api.board.elements[0].mathExpressions[0].handwriting.candidate.engine,'extra-test');assert.equal(JSON.stringify(r.api.board.elements[0].handwriting),primary);
+  r.fire('undo','click');assert.equal(r.api.board.elements[0].mathExpressions[0].value,'z = x + 1');r.fire('redo','click');assert.equal(r.api.board.elements[0].mathExpressions[0].value,'z = x + 2')
+})
+
+test('手写编辑主公式和追加公式拒绝陈旧表达值，关闭重开仍保留原校对基线',()=>{
+  for(const id of ['primary','extra']){
+    const b=board();b.elements[0].mathExpressions=[{id:'extra',value:'z = x + 1'}];const r=runtime(b);r.api.select('a');r.api.math.openHandwriting({expression:id});r.node('ink-result').value='w = x + 2';r.fire('ink-result','input');
+    r.api.change(()=>{if(id==='primary')r.api.board.elements[0].math='y = 2x';else r.api.board.elements[0].mathExpressions[0].value='z = 2x'});
+    r.fire('ink-apply','click');assert.match(r.node('ink-feedback').textContent,/已变化/);assert.equal(r.node('ink-dialog').open,true);
+    assert.equal(id==='primary'?r.api.board.elements[0].math:r.api.board.elements[0].mathExpressions[0].value,id==='primary'?'y = 2x':'z = 2x');
+    r.fire('ink-close','click');r.api.math.openHandwriting({expression:id});assert.equal(r.node('ink-result').value,'w = x + 2');r.fire('ink-apply','click');assert.match(r.node('ink-feedback').textContent,/已变化/);
+    assert.equal(id==='primary'?r.api.board.elements[0].math:r.api.board.elements[0].mathExpressions[0].value,id==='primary'?'y = 2x':'z = 2x')
+  }
+})
+
+test('中文手写写入选中部位也拒绝打开期间变化的中文说明',()=>{
+  const b=board();b.elements[0].handwriting={mode:'text',reviewed:true,strokes:[[[10,10],[20,20]]],candidate:{text:'处理输入'}};
+  const r=runtime(b);r.api.select('a');r.api.math.openHandwriting();assert.equal(r.node('ink-destination').value,'selected');r.node('ink-result').value='校对后的手写说明';
+  r.api.change(()=>r.api.board.elements[0].text='另一版本的新说明');r.fire('ink-apply','click');
+  assert.equal(r.api.board.elements[0].text,'另一版本的新说明');assert.match(r.node('ink-feedback').textContent,/中文说明已变化/);assert.equal(r.node('ink-dialog').open,true);
+  assert.equal(r.api.board.elements[0].handwriting.candidate.text,'处理输入')
+})
+
+test('普通手写入口兼容只保留独立主公式笔迹的部位',()=>{
+  const b=board();b.elements[0].mathHandwriting={mode:'math',reviewed:true,strokes:[[[100,100],[180,150]]],candidate:{text:'y = f(x)',engine:'separate-test'}};
+  const r=runtime(b);r.api.select('a');r.api.math.openHandwriting();assert.equal(r.api.math.mode,'math');assert.equal(r.node('ink-destination').value,'edit:primary');
+  assert.equal(r.node('ink-result').value,'y = f(x)');assert.equal(JSON.stringify(r.api.math.strokes),JSON.stringify(b.elements[0].mathHandwriting.strokes));
+  r.node('ink-result').value='y = 2x';r.fire('ink-apply','click');assert.equal(r.api.board.elements[0].math,'y = 2x');assert.equal(r.api.board.elements[0].handwriting,undefined);
+  assert.equal(r.api.board.elements[0].mathHandwriting.candidate.engine,'separate-test')
+})
+
+test('数学失焦排版保留编辑区 DOM，内容与几何作为同一步撤销',()=>{
+  const r=runtime(board());r.api.select('a');const before=JSON.stringify(r.api.board),inspector=r.node('inspector');
+  let html=inspector.innerHTML,rebuilds=0;Object.defineProperty(inspector,'innerHTML',{get:()=>html,set:value=>{rebuilds++;html=value}});
+  const target={dataset:{field:'math'},value:'y = x + '.repeat(20)+'1',type:'textarea'};
+  r.fire('inspector','input',{target});r.fire('inspector','focusout',{target});
+  assert.equal(rebuilds,0);assert.notEqual(JSON.stringify(r.api.board),before);
+  r.fire('undo','click');assert.equal(JSON.stringify(r.api.board),before);assert.equal(r.node('undo').disabled,true);
+  r.fire('redo','click');assert.equal(r.api.board.elements[0].math,target.value)
+})

@@ -1,8 +1,12 @@
 {
   "name": "anatomy",
-  "version": "0.10.0",
+  "version": "0.11.0",
   "description": "自然语言与数学工程画板：项目保存、选定历史版本、程序映射与严格实现校验。",
   "skills": "./skills/",
   "mcpServers": "./.mcp.json",
-  "interface": { "displayName": "Anatomy 工程画板", "shortDescription": "在工程内保存画板，按选定版本严格对照实现", "category": "Productivity" }
+  "interface": {
+    "displayName": "Anatomy 工程画板",
+    "shortDescription": "在工程内保存画板，按选定版本严格对照实现",
+    "category": "Productivity"
+  }
 }
