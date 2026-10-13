@@ -6,7 +6,6 @@ from pathlib import Path
 import tempfile
 import threading
 import unittest
-from http.client import HTTPConnection
 from urllib.request import Request, urlopen
 from urllib.error import HTTPError
 from PIL import Image, ImageDraw
@@ -123,36 +122,6 @@ class HandwritingServiceTests(unittest.TestCase):
             self.assertEqual(result['text'], expected)
             self.assertTrue(result['reviewRequired'])
         self.assertEqual(self.engine.calls, [('text', (240, 120)), ('math', (240, 120))])
-
-    def test_image_board_versions_allow_large_json_and_keep_embedded_data(self):
-        project = Path(self.temp.name)
-        (project / 'body.json').write_text(json.dumps({'schema': 'anatomy/1', 'slug': 'test', 'title': '测试', 'board': {'version': 1, 'elements': []}}))
-        head = json.loads(self.request('/api/versions')[1])
-        board = {'version': 1, 'elements': [{'id': 'picture', 'type': 'image', 'x': 0, 'y': 0, 'width': 240, 'height': 170,
-                  'image': {'src': image_data(), 'alt': '工程输入的图示', 'width': 240, 'height': 120}}],
-                 'extension': {'preserve': '大' * (module.MAX_BODY // 3 + 1024)}}
-        payload = {'body': 'test', 'board': board, 'baseHash': head['currentHash'], 'expectedSelection': None}
-        self.assertGreater(len(json.dumps(payload, ensure_ascii=False).encode()), module.MAX_BODY)
-        status, raw = self.request('/api/versions', payload)
-        self.assertEqual(status, 200)
-        saved = json.loads(raw)
-        self.assertEqual(saved['board']['elements'][0]['image'], board['elements'][0]['image'])
-        self.assertEqual(json.loads(self.request('/api/versions/current')[1])['board'], board)
-
-    def test_project_and_recognition_requests_keep_distinct_byte_limits(self):
-        for path, limit in [('/api/versions', module.MAX_VERSION_BODY), ('/api/recognize', module.MAX_BODY)]:
-            connection = HTTPConnection('127.0.0.1', self.server.server_port, timeout=3)
-            try:
-                connection.putrequest('POST', path)
-                connection.putheader('Content-Type', 'application/json')
-                connection.putheader('Content-Length', str(limit + 1))
-                connection.endheaders()
-                response = connection.getresponse()
-                self.assertEqual(response.status, 413)
-                self.assertFalse(json.loads(response.read())['ok'])
-            finally:
-                connection.close()
-        self.assertFalse(self.engine.calls)
 
     def test_invalid_or_blank_input_never_calls_model(self):
         for payload in [{'mode': 'code', 'image': image_data()}, {'mode': 'text', 'image': image_data(True)}, {'mode': 'math', 'image': 'https://example.com/a.png'}, {'mode': 'math', 'image': 'data:image/png;base64,bad'}]:

@@ -25,7 +25,7 @@ function runtime(board, options = {}) {
     const listeners = {}
     const result = {
       id, value: '', innerHTML: '', textContent: '', style: {}, dataset: {}, attributes: {}, listeners,
-      hidden: id === 'inline-writing', open: false,
+      hidden: false, open: false,
       classList: { add() {}, remove() {}, toggle() { return true } },
       setAttribute(key, value) { this.attributes[key] = value },
       getAttribute(key) { return this.attributes[key] },
@@ -306,7 +306,7 @@ test('两次近距真实指针点击重绘后的文字仍打开原位编辑并�
   r.fire('surface', 'pointerdown', pointerEvent(600, 300, 'b'))
   r.fire('surface', 'pointerup', pointerEvent(600, 300, 'b'))
   r.fire('surface', 'pointerdown', pointerEvent(602, 301, 'b'))
-  assert.equal(r.node('inline-writing').hidden, false)
+  assert.equal(r.node('paper-dialog').open, true)
   assert.equal(r.api.canvas.draft.kind, 'paper')
   assert.equal(r.api.canvas.draft.target, 'b')
   r.api.paper.text('双击编辑输出部位。'); r.fire('paper-confirm', 'click')
@@ -319,7 +319,7 @@ test('两次真实指针点击额外公式按稳定标识编辑，保留原有�
   r.fire('surface', 'pointerdown', pointerEvent(220, 320, 'a', 'constraint'))
   r.fire('surface', 'pointerup', pointerEvent(220, 320, 'a', 'constraint'))
   r.fire('surface', 'pointerdown', pointerEvent(221, 321, 'a', 'constraint'))
-  assert.equal(r.node('inline-writing').hidden, false)
+  assert.equal(r.node('paper-dialog').open, true)
   assert.equal(r.node('formula-dialog').open, false)
   assert.equal(r.api.canvas.draft.value.mathExpressions[0].value, 'x ≥ 0')
   r.api.paper.equation('constraint', 'x > 0')
@@ -334,9 +334,9 @@ test('两次真实指针点击额外公式按稳定标识编辑，保留原有�
 test('关闭未改动纸页后原生双击仍可重新打开并直接编辑', () => {
   const r = runtime(fixture())
   r.api.canvas.openPaperEditor('a'); r.fire('paper-close', 'click')
-  assert.equal(r.node('inline-writing').hidden, true)
+  assert.equal(r.node('paper-dialog').open, false)
   r.fire('surface', 'dblclick', pointerEvent(600, 300, 'b'))
-  assert.equal(r.node('inline-writing').hidden, false)
+  assert.equal(r.node('paper-dialog').open, true)
   assert.equal(r.api.canvas.draft.target, 'b')
   r.api.paper.text('重新打开后修改。'); assert.equal(r.api.canvas.confirm(), true)
   assert.equal(r.api.board.elements[1].text, '重新打开后修改。')
