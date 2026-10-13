@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import {mkdtempSync,writeFileSync,readFileSync,rmSync} from 'node:fs'
 import {join} from 'node:path'
 import {apply} from '../lib/index.js'
-import {boardDiagnostics,boardFor,boardBundle,lineEnds,deleteElements,moveElements,BOARD_TYPES} from '../lib/board.js'
+import {boardDiagnostics,boardFor,boardBundle,lineEnds,deleteElements,moveElements,BOARD_TYPES,elementProgram,validMathInk} from '../lib/board.js'
 import {mappingIndex,impactOf} from '../lib/mapping.js'
 import {renderAnatomy} from '../lib/render.js'
 import { FORMULA_GROUPS, MATH_SYMBOL_GROUPS, formulaMarkup } from '../lib/math.js'
@@ -15,9 +15,60 @@ const rect=(id,x=0)=>({id,type:'rect',x,y:0,width:100,height:80,text:'处理输�
 const board=()=>({version:1,elements:[rect('a'),rect('b',300),{id:'link',type:'arrow',x:50,y:40,width:300,height:0,from:'a',to:'b'}]})
 async function fixture(t){const root=mkdtempSync('/tmp/anatomy-board-');t.after(()=>rmSync(root,{recursive:true,force:true}));const ts=new Map();apply({tools:{register(d){ts.set(d.name,d);return()=>{}}}},{rootDir:root,autoServe:false});const dir=join(root,'anatomy-model');const call=(n,args={})=>ts.get('anatomy_'+n).execute({dir,repoRoot:root,...args});assert.equal((await call('init',{body:'model',title:'工程画板',oneline:'用图形描述工程。'})).ok,true);return {root,dir,call}}
 test('无系统、无器官也可创建、渲染和反查自由画板',async t=>{const {call,root}=await fixture(t);writeFileSync(join(root,'part.js'),'export function processInput(input) { return input; }');const b=board();b.elements[0].anchors=[{file:'part.js',symbol:'processInput',role:'implementation',reason:'处理输入'}];assert.equal((await call('board',{board:b})).ok,true);const r=await call('board',{element:'a'});assert.equal(r.program.implementation.code,'return input;');assert.match(r.element.anchors[0].sha256,/^[a-f0-9]{64}$/);assert.equal((await call('render')).ok,true);const body={title:'工程画板',board:r.board};assert.equal(mappingIndex(body,[],[]).files[0].refs[0].kind,'element');assert.equal(impactOf(body,[],[],{files:['part.js']}).elements[0].id,'a');assert.ok(humanMap(body,[],[]).includes('y = f(x)'));assert.ok(!humanMap(body,[],[]).includes('return input'));assert.ok(agentDigest(body,[],[]).includes('return input;'))})
-test('图形种类完整，未知字段在修改包内原样保留',()=>{const b={version:1,elements:BOARD_TYPES.map((type,i)=>({...rect('e'+i),type,...(['pen','polygon'].includes(type)?{points:[[0,0],[1,0],[.5,1]]}:{})}))};assert.deepEqual(boardDiagnostics(b),[]);const c=structuredClone(b);c.elements[0].text='新的人的意图';const pack=boardBundle(b,c,'model','baseline');assert.equal(pack.baseHash,'baseline');assert.deepEqual(pack.edits[0].patch.board,c);assert.deepEqual(boardBundle(c,c,'model','baseline').edits,[])})
+test('图形种类完整，未知字段在修改包内原样保留',()=>{const b={version:1,elements:BOARD_TYPES.map((type,i)=>({...rect('e'+i),type,...(['pen','polygon'].includes(type)?{points:[[0,0],[1,0],[.5,1]]}:{}),...(type==='image'?{image:{src:'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAMAAAACCAIAAAASFvFNAAAAFUlEQVR4nGN0S1nAwMDAwMDAxAADABcWAU7Ylb4oAAAAAElFTkSuQmCC',alt:'工程示意图',width:3,height:2}}:{})}))};assert.deepEqual(boardDiagnostics(b),[]);const c=structuredClone(b);c.elements[0].text='新的人的意图';const pack=boardBundle(b,c,'model','baseline');assert.equal(pack.baseHash,'baseline');assert.deepEqual(pack.edits[0].patch.board,c);assert.deepEqual(boardBundle(c,c,'model','baseline').edits,[])})
 test('缺引用、重复标识、非法几何、代码混入人读均阻断整包写入',async t=>{const {call,dir}=await fixture(t);await call('board',{board:board()});const baseline=readFileSync(join(dir,'body.json'),'utf8');for(const mutate of [b=>b.elements.push({...rect('a')}),b=>b.elements[0].width=-1,b=>b.elements[0].text='const x = 1',b=>b.elements[0].targets=[{kind:'organ',id:'missing'}],b=>b.elements[2].to='gone',b=>b.elements[0].anchors=['bad'],b=>b.elements[0].fill='#abcde',b=>b.elements.push(null)]){const b=board();mutate(b);assert.equal((await call('board',{board:b,force:true,strict:false})).ok,false);assert.equal(readFileSync(join(dir,'body.json'),'utf8'),baseline)}})
 test('画板修改带基线落地，陈旧版本拒绝且完整程序元数据保留',async t=>{const {call}=await fixture(t);const first=await call('board',{board:board()});const next=structuredClone(first.board);next.elements[0].text='新的工程意图';const pack=boardBundle(first.board,next,'model',first.anatomyHash);assert.equal((await call('apply_edits',pack)).ok,true);assert.equal((await call('board',{element:'a'})).element.implementation.extra.preserve,true);assert.equal((await call('apply_edits',pack)).ok,false)})
+
+const mathInk=()=>({mode:'math',strokes:[[[20,30],[80,100]]],reviewed:false,candidate:{text:'x ≥ 0',engine:'local-test',extension:{keep:true}},extension:{keep:true}})
+test('主公式和附加公式可选择原笔迹或排版，旧字段不被强制迁移',()=>{
+  const b=board(),e=b.elements[0];e.mathHandwriting=mathInk();e.mathDisplay='ink';e.mathExpressions=[{id:'constraint',value:'x ≥ 0',display:'ink',handwriting:mathInk(),extension:{keep:true}}]
+  assert.deepEqual(boardDiagnostics(b),[])
+  e.mathDisplay='typeset';e.mathExpressions[0].display='typeset';assert.deepEqual(boardDiagnostics(b),[])
+  e.mathDisplay='ink';delete e.mathHandwriting;e.handwriting=mathInk();assert.deepEqual(boardDiagnostics(b),[])
+  delete e.mathDisplay;delete e.mathExpressions[0].display;delete e.handwriting;e.mathExpressions[0].handwriting={strokes:[[[1,2],[3,4]]],extension:{legacy:true}}
+  assert.deepEqual(boardDiagnostics(b),[])
+})
+test('原笔迹模式要求真实有效数学笔迹，候选文字、空笔画和越界坐标不能冒充',()=>{
+  const invalid=[undefined,{mode:'math',candidate:{text:'x ≥ 0'}},{mode:'math',strokes:[]},{mode:'text',strokes:[[[10,10],[20,20]]]},{mode:'math',strokes:[[]]},{mode:'math',strokes:[[[NaN,10]]]},{mode:'math',strokes:[[[1001,10]]]},{mode:'math',strokes:[[[10,421]]]},{mode:'math',strokes:[Array.from({length:1501},()=>[10,10])]}]
+  for(const handwriting of invalid){
+    assert.equal(validMathInk(handwriting),false)
+    const primary=board();primary.elements[0].mathDisplay='ink';primary.elements[0].mathHandwriting=handwriting
+    assert.ok(boardDiagnostics(primary).some(error=>error.code==='board/math-ink'))
+    const extra=board();extra.elements[0].mathHandwriting=mathInk();extra.elements[0].mathExpressions=[{id:'constraint',value:'x ≥ 0',display:'ink',handwriting}]
+    assert.ok(boardDiagnostics(extra).some(error=>error.code==='board/math-ink'))
+  }
+  for(const display of ['raw',null,{},true]){const b=board();b.elements[0].mathDisplay=display;b.elements[0].mathExpressions=[{id:'constraint',value:'x ≥ 0',display}];assert.equal(boardDiagnostics(b).filter(error=>error.code==='board/math-display').length,2)}
+})
+test('原笔迹已有校对表达基线时拒绝显示陈旧公式，旧笔迹未记基线继续兼容',()=>{
+  const b=board(),e=b.elements[0];e.mathDisplay='ink';e.mathHandwriting={...mathInk(),reviewedValue:e.math};e.mathExpressions=[{id:'constraint',value:'x ≥ 0',display:'ink',handwriting:{...mathInk(),reviewedValue:'x ≥ 0'}}]
+  assert.deepEqual(boardDiagnostics(b),[])
+  e.math='y = 2x';e.mathExpressions[0].value='x > 0';assert.equal(boardDiagnostics(b).filter(error=>error.code==='board/math-ink-stale').length,2)
+  e.mathDisplay='typeset';e.mathExpressions[0].display='typeset';assert.deepEqual(boardDiagnostics(b),[])
+  e.mathDisplay='ink';e.mathExpressions[0].display='ink';delete e.mathHandwriting.reviewedValue;delete e.mathExpressions[0].handwriting.reviewedValue;assert.deepEqual(boardDiagnostics(b),[])
+  e.mathHandwriting.reviewedValue=123;assert.ok(boardDiagnostics(b).some(error=>error.code==='board/math-ink-stale'))
+})
+test('绘图机读保留原始点、手写候选、显示选择及完整公式元数据，不改写原数据',()=>{
+  const e={...rect('stroke'),type:'pen',points:[[0,0],[.5,1],[1,0]],rotation:45,handwriting:{mode:'text',strokes:[[[1,2],[3,4]]]},mathHandwriting:mathInk(),mathDisplay:'ink',recognition:{mode:'text',text:'等待校对',reviewed:false,rawElements:[{id:'source-stroke',type:'pen',points:[[0,0],[1,1]],anchors:[{file:'source.js',sha256:'a'.repeat(64)}]}],extension:{keep:true}},mathExpressions:[{id:'constraint',value:'x ≥ 0',display:'ink',handwriting:mathInk(),extension:{keep:true}}]}
+  const before=structuredClone(e),program=elementProgram(e)
+  assert.equal(program.type,'pen');assert.equal(program.geometry.rotation,45)
+  for(const key of ['points','handwriting','mathHandwriting','mathDisplay','recognition'])assert.deepEqual(program[key],e[key])
+  assert.deepEqual(program.mathExpressions,[{id:'primary',value:e.math},{id:'constraint',value:'x ≥ 0'}])
+  assert.deepEqual(program.mathExpressionsRaw,e.mathExpressions)
+  program.points[0][0]=999;program.mathHandwriting.strokes[0][0][0]=999;program.mathExpressionsRaw[0].handwriting.candidate.extension.keep=false;program.recognition.rawElements[0].points[0][0]=999
+  assert.deepEqual(e,before)
+})
+test('新显示字段的保存与应用过严格门禁，真实笔迹和源码映射完整往返',async t=>{
+  const {call,dir}=await fixture(t),b=board();b.elements[0].mathDisplay='ink';b.elements[0].mathHandwriting=mathInk();b.elements[0].recognition={mode:'math',text:'y = f(x)',reviewed:false}
+  b.elements[0].mathExpressions=[{id:'constraint',value:'x ≥ 0',display:'ink',handwriting:mathInk(),extension:{keep:true}}]
+  assert.equal((await call('board',{board:b})).ok,true)
+  const read=await call('board',{element:'a'});assert.deepEqual(read.program.mathHandwriting,b.elements[0].mathHandwriting);assert.deepEqual(read.program.mathExpressionsRaw,b.elements[0].mathExpressions)
+  const changed=structuredClone(read.board);changed.elements[0].mathDisplay='typeset';changed.elements[0].mathExpressions[0].display='typeset'
+  assert.equal((await call('apply_edits',boardBundle(read.board,changed,'model',read.anatomyHash))).ok,true)
+  const final=await call('board',{element:'a'});assert.deepEqual(final.program.mathHandwriting,b.elements[0].mathHandwriting);assert.equal(final.program.mathDisplay,'typeset')
+  const disk=readFileSync(join(dir,'body.json'),'utf8'),bad=structuredClone(changed);bad.elements[0].mathDisplay='ink';delete bad.elements[0].mathHandwriting
+  assert.equal((await call('apply_edits',{...boardBundle(changed,bad,'model',final.anatomyHash),force:true,strict:false})).ok,false)
+  assert.equal(readFileSync(join(dir,'body.json'),'utf8'),disk)
+})
 test('源码变化必须复核，普通画板编辑不能重置源码基线',async t=>{const {call,root}=await fixture(t);writeFileSync(join(root,'part.js'),'export const value = 1;');const b=board();b.elements[0].anchors=[{file:'part.js'}];const first=await call('board',{board:b});assert.equal(first.ok,true);writeFileSync(join(root,'part.js'),'export const value = 2;');const next=structuredClone(first.board);next.elements[0].text='修改说明';const failed=await call('board',{board:next});assert.equal(failed.ok,false);assert.ok(failed.errors.some(e=>e.code==='anchor/source-changed'));assert.equal((await call('board')).board.elements[0].anchors[0].sha256,first.board.elements[0].anchors[0].sha256);const reviewed=await call('board',{board:next,reviewSources:true});assert.equal(reviewed.ok,true);assert.notEqual(reviewed.board.elements[0].anchors[0].sha256,first.board.elements[0].anchors[0].sha256)})
 test('连线停在形状边界，移动和删除端点后位置连续',()=>{const b=board(),line=b.elements[2];assert.deepEqual(lineEnds(line,b.elements),{a:{x:100,y:40},b:{x:300,y:40}});moveElements(b,['a'],20,0);assert.equal(lineEnds(line,b.elements).a.x,120);const ends=lineEnds(line,b.elements);deleteElements(b,['a']);assert.deepEqual(lineEnds(line,b.elements),ends);assert.equal(line.from,undefined);assert.equal(line.to,'b');assert.deepEqual(boardDiagnostics(b),[])})
 test('连续拖动连线采用原始坐标，移动组合不二次偏移',()=>{const b=board(),original=structuredClone(b);moveElements(b,['link'],10,20,original);moveElements(b,['link'],30,40,original);assert.deepEqual(lineEnds(b.elements[2],b.elements),{a:{x:130,y:80},b:{x:330,y:80}});assert.equal(b.elements[2].from,undefined);const all=board();moveElements(all,['a','b','link'],30,40);assert.deepEqual(lineEnds(all.elements[2],all.elements),{a:{x:130,y:80},b:{x:330,y:80}});assert.equal(all.elements[2].from,'a')})
