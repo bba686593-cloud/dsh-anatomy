@@ -323,6 +323,51 @@ test('圈选完成只显示两个识别入口，普通图元操作关闭，显�
  r.api.setTool('select');assert.equal(r.node('surface').classList.contains('lasso-mode'),false);assert.equal(r.node('canvas-tools').hidden,false);assert.equal(r.toolbarActions.program.hidden,false);assert.equal(r.node('canvas-more').hidden,false);assert.match(r.node('world').innerHTML,/data-resize=/);r.api.setTool('lasso');await dragLasso(r,rectLasso);assert.equal(r.node('canvas-tools').hidden,true);assert.equal(r.node('recognize-lasso-text').hidden,true);assert.equal(r.node('recognize-lasso-math').hidden,true);
 });
 
+test('左侧识别复用圈选，先选择中文或公式，再自动提交对应模式并保留圈外笔迹',async()=>{
+ for(const mode of ['text','math']){
+  const posted=[],value=mode==='text'?'输入检查':'y=ax',r=runtime([pen],{fetch:async(path,options={})=>{if(path==='/api/recognize'){posted.push({method:options.method,...JSON.parse(options.body)});return response({ok:true,text:value,engine:'choice-test'})}return response({service:'anatomy-handwriting',ready:true})}}),before=plain(r.api.board);
+  r.api.graphics.lasso(middleInkRegion);const outside=plain(r.api.graphics.slices[0].outside),selected=plain(r.api.selected);await r.fire('open-handwriting','click');
+  assert.equal(r.node('ink-choice-dialog').open,true);assert.equal(r.node('ink-dialog').open,false);assert.equal(posted.length,0);assert.deepEqual(plain(r.api.graphics.region),middleInkRegion);assert.deepEqual(plain(r.api.selected),selected);
+  await r.fire('ink-choice-'+mode,'click');assert.equal(r.node('ink-choice-dialog').open,false);assert.equal(r.node('ink-dialog').open,true);assert.equal(r.api.math.mode,mode);assert.equal(posted.length,1);assert.equal(posted[0].method,'POST');assert.equal(posted[0].mode,mode);assert.match(posted[0].image,/^data:image\/png;base64,/);assert.equal(r.node('ink-result').value,value);assert.deepEqual(plain(r.api.board),before);
+  const candidate=await r.api.math.applyInkResult();assert.equal(candidate.type,mode==='text'?'text':'image');assert.deepEqual(plain(candidate.recognition.region),middleInkRegion);assert.deepEqual(plain(candidate.recognition.rawElements),[pen]);assert.deepEqual(plain(r.api.board.elements.filter(e=>e.type==='pen')),outside);r.api.undo();assert.deepEqual(plain(r.api.board),before);
+ }
+});
+
+test('取消左侧识别选择不请求不改内容，保留套索和之前的撤销历史',async()=>{
+ for(const action of ['button','cancel']){
+  let posted=0;const r=runtime([pen],{fetch:async path=>{if(path==='/api/recognize')posted++;return response({service:'anatomy-handwriting',ready:true})}}),initial=plain(r.api.board);r.api.change(()=>{r.api.board.elements[0].custom.prior='选择识别前的修改'});const before=plain(r.api.board);r.api.graphics.lasso(fullInkRegion);const selected=plain(r.api.selected);await r.fire('open-handwriting','click');assert.equal(r.node('ink-choice-dialog').open,true);
+  if(action==='button')await r.fire('ink-choice-cancel','click');else await r.fire('ink-choice-dialog','cancel');assert.equal(r.node('ink-choice-dialog').open,false);assert.equal(r.node('ink-dialog').open,false);assert.deepEqual(plain(r.api.graphics.region),fullInkRegion);assert.deepEqual(plain(r.api.selected),selected);
+  await r.fire('ink-choice-text','click');await r.fire('ink-choice-math','click');assert.equal(posted,0);assert.deepEqual(plain(r.api.board),before);r.api.undo();assert.deepEqual(plain(r.api.board),initial);
+ }
+});
+
+test('选择识别后等待捕获完成才发请求，重复点击选择不会重复捕获或识别',async()=>{
+ const work=deferred();let captures=0,posted=0;const r=runtime([pen],{capture:()=>{captures++;return work.promise},fetch:async path=>{if(path==='/api/recognize'){posted++;return response({ok:true,text:'y=ax'})}return response({service:'anatomy-handwriting',ready:true})}}),before=plain(r.api.board);r.api.graphics.lasso(fullInkRegion);await r.fire('open-handwriting','click');const choosing=r.fire('ink-choice-math','click'),session=r.api.math.lassoSession;
+ assert.equal(r.node('ink-choice-dialog').open,false);assert.equal(session.capturing,true);assert.equal(r.node('ink-recognize').disabled,true);assert.equal(captures,1);assert.equal(posted,0);assert.deepEqual(plain(r.api.board),before);await r.fire('ink-choice-math','click');await r.fire('ink-choice-text','click');assert.equal(captures,1);assert.equal(posted,0);
+ work.resolve(fixtureCapture(session));await choosing;assert.equal(captures,1);assert.equal(posted,1);assert.equal(r.node('ink-result').value,'y=ax');await r.fire('ink-choice-math','click');assert.equal(posted,1);assert.deepEqual(plain(r.api.board),before);
+});
+
+test('自动识别等待捕获时关闭面板或保留原稿，晚到预览不发请求也不新增历史',async()=>{
+ for(const action of ['ink-close','ink-keep','cancel']){
+  const work=deferred();let posted=0;const r=runtime([pen],{capture:()=>work.promise,fetch:async path=>{if(path==='/api/recognize')posted++;return response({service:'anatomy-handwriting',ready:true})}}),initial=plain(r.api.board);r.api.change(()=>{r.api.board.elements[0].custom.prior='自动识别前的修改'});const before=plain(r.api.board);r.api.graphics.lasso(fullInkRegion);await r.fire('open-handwriting','click');const choosing=r.fire('ink-choice-text','click'),session=r.api.math.lassoSession;assert.equal(session.capturing,true);assert.equal(posted,0);
+  if(action==='cancel')await r.fire('ink-dialog','cancel');else await r.fire(action,'click');work.resolve(fixtureCapture(session));await choosing;assert.equal(posted,0);assert.equal(r.node('ink-dialog').open,false);assert.equal(r.api.math.lassoSession,null);assert.deepEqual(plain(r.api.board),before);r.api.undo();assert.deepEqual(plain(r.api.board),initial);
+ }
+});
+
+test('自动识别捕获失败或期间原稿和选定版本变化，均不提交陈旧图片',async()=>{
+ for(const stale of ['capture','ink','version']){
+  const work=deferred();let revision='selected-1',posted=0;const r=runtime([pen],{capture:async()=>{const captured=await work.promise;if(stale==='capture')throw Error('捕获失败');return captured},fetch:async path=>{if(path==='/api/recognize'){posted++;return response({ok:true,text:'y=ax'})}return path.startsWith('/api/versions')?response({ok:true,selected:{id:'saved',revision},versions:[]}):response({service:'anatomy-handwriting',ready:true})}});await r.api.versions.refresh();r.api.graphics.lasso(fullInkRegion);await r.fire('open-handwriting','click');const choosing=r.fire('ink-choice-math','click'),session=r.api.math.lassoSession;assert.equal(session.capturing,true);assert.equal(posted,0);
+  if(stale==='ink')r.api.change(()=>{r.api.board.elements[0].x+=10});else if(stale==='version'){revision='selected-2';await r.api.versions.refresh()}const current=plain(r.api.board);work.resolve(fixtureCapture(session));await choosing;assert.equal(posted,0);assert.equal(session.image,undefined);assert.equal(session.captureError,true);assert.equal(r.node('ink-recognize').disabled,true);assert.deepEqual(plain(r.api.board),current);assert.match(r.node('ink-feedback').textContent,stale==='capture'?/未完成|失败/:/变化/);
+ }
+});
+
+test('识别选择打开后内容、版本或圈线变化，选择旧选项不捕获也不发请求',async()=>{
+ for(const stale of ['ink','version','region']){
+  let revision='selected-1',captures=0,posted=0;const r=runtime([pen],{capture:async session=>{captures++;return fixtureCapture(session)},fetch:async path=>{if(path==='/api/recognize'){posted++;return response({ok:true,text:'y=ax'})}return path.startsWith('/api/versions')?response({ok:true,selected:{id:'saved',revision},versions:[]}):response({service:'anatomy-handwriting',ready:true})}});await r.api.versions.refresh();r.api.graphics.lasso(fullInkRegion);await r.fire('open-handwriting','click');assert.equal(r.node('ink-choice-dialog').open,true);
+  if(stale==='ink')r.api.change(()=>{r.api.board.elements[0].x+=10});else if(stale==='version'){revision='selected-2';await r.api.versions.refresh()}else r.api.graphics.lasso(middleInkRegion);const current=plain(r.api.board);await r.fire('ink-choice-math','click');assert.equal(captures,0);assert.equal(posted,0);assert.equal(r.node('ink-dialog').open,false);assert.equal(r.node('ink-choice-dialog').open,false);assert.deepEqual(plain(r.api.board),current);
+ }
+});
+
 test('圈选完成的隐藏选择不响应编辑快捷键，复制与全局撤销保留且按V后可移动删除',async()=>{
  const r=lassoRuntime(),initial=plain(r.api.board);r.api.change(()=>{r.api.board.elements[0].custom.prior='此前修改'});const before=plain(r.api.board);r.api.setTool('lasso');await dragLasso(r,penLasso);const selected=plain(r.api.selected);assert.deepEqual(selected,['ink']);
  for(const event of [{key:'ArrowRight'},{key:'Delete'},{key:'Backspace'},{key:'d',ctrlKey:true},{key:'a',ctrlKey:true}])await r.dispatchDocument('keydown',event);assert.deepEqual(plain(r.api.board),before);assert.deepEqual(plain(r.api.selected),selected);assert.equal(r.evaluate('tool'),'lasso');assert.match(r.node('toast').textContent,/切换.*选择/);
