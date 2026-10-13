@@ -1,6 +1,6 @@
 {
   "name": "@dsh-external/dsh-anatomy",
-  "version": "0.16.2",
+  "version": "0.16.3",
   "description": "自由二维工程画板：用自然语言与数学描述工程，点击任意图元读写程序映射，支持源码反查、版本化修改和强校验。",
   "type": "module",
   "main": "./lib/index.js",
