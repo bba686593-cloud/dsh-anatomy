@@ -20,9 +20,9 @@ function runtime(initial=fixture(),options={}){
     $:node,get:id=>context.board.elements.find(e=>e.id===id),chosen:()=>context.board.elements.find(e=>context.selected.has(e.id)),document:{body:node('body')},
     esc:s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])),
     boardDiagnostics,elementMathEntries,elementProgram,readingRoutes,partTitle,relationName,humanText,katex:{},formulaMarkup:tex=>({html:'<math>'+String(tex)+'</math>'}),
-    localStorage:{getItem:key=>storage.get(key),setItem:(key,value)=>storage.set(key,value),removeItem:key=>storage.delete(key)},status(){calls.push(['status'])},message(text){calls.push(['message',text])},canvasDirty:false,canvasDraftChanged(){return context.canvasDirty},
+    localStorage:{getItem:key=>storage.get(key),setItem:(key,value)=>storage.set(key,value),removeItem:key=>storage.delete(key)},status(){calls.push(['status'])},message(text){calls.push(['message',text])},canvasDirty:false,canvasDraftPending(){return context.canvasDirty},
     flushField(){},setTool(tool){calls.push(['tool',tool])},focusPart(id){context.selected=new Set([id]);calls.push(['focus',id]);context.renderReading()},
-    openProgram(id){calls.push(['program',id])},openTextEditor(id){calls.push(['human',id])},renderScene(){calls.push(['scene'])},
+    openProgram(id){calls.push(['program',id])},openPaperEditor(id){calls.push(['human',id])},renderScene(){calls.push(['scene'])},
     change(fn){const before=JSON.stringify(context.board);fn();if(before!==JSON.stringify(context.board)){undo.push(before);redo.length=0;saves++}context.renderReading()}
   };
   // The integrated page may render before the extension's var assignments run.
