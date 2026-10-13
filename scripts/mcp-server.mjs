@@ -3,6 +3,8 @@
 import { createInterface } from 'node:readline'
 import { readFileSync } from 'node:fs'
 import { apply } from '../lib/index.js'
+import { MAX_BOARD_REQUEST_BYTES } from '../lib/images.js'
+import { mcpToolResult } from './mcp-image-content.mjs'
 const defs=new Map(), rootIndex=process.argv.indexOf('--root')
 const rootDir=rootIndex>=0?process.argv[rootIndex+1]:process.env.ANATOMY_PROJECT_ROOT||process.cwd()
 apply({tools:{register:t=>defs.set(t.name,t)},logger:{info:m=>process.stderr.write(m+'\n')}},{rootDir,autoOpen:false})
@@ -34,13 +36,13 @@ async function dispatch(msg){
   if(msg.method==='tools/call'){
     const t=defs.get(msg.params?.name);if(!t)return error(-32602,'Unknown tool')
     const args=msg.params?.arguments??{}, issue=invalid(args,t.parameters);if(issue)return error(-32602,issue)
-    const value=await t.execute(args);return result({content:[{type:'text',text:JSON.stringify(value)}],structuredContent:typeof value==='object'&&value!==null?value:{value},isError:value?.ok===false})
+    const value=await t.execute(args);return result(mcpToolResult(t.name,value))
   }
   return error(-32601,'Method not found')
 }
 const lines=createInterface({input:process.stdin,crlfDelay:Infinity})
 for await(const line of lines){
-  if(Buffer.byteLength(line)>8*1024*1024){send({jsonrpc:'2.0',id:null,error:{code:-32600,message:'Request too large'}});continue}
+  if(Buffer.byteLength(line)>MAX_BOARD_REQUEST_BYTES){send({jsonrpc:'2.0',id:null,error:{code:-32600,message:'Request too large'}});continue}
   let msg;try{msg=JSON.parse(line)}catch{send({jsonrpc:'2.0',id:null,error:{code:-32700,message:'Parse error'}});continue}
   try{await dispatch(msg)}catch(e){send({jsonrpc:'2.0',id:msg?.id??null,error:{code:-32603,message:e.message}})}
 }

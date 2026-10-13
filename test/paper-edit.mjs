@@ -31,7 +31,7 @@ function runtime(board, options = {}) {
     const listeners = {}
     const element = {
       id, value: '', innerHTML: '', innerText: '', textContent: '', style: {}, dataset: {}, attributes: {}, listeners,
-      hidden: false, open: false, selectionStart: 0, selectionEnd: 0,
+      hidden: id === 'inline-writing', open: false, selectionStart: 0, selectionEnd: 0,
       classList: { add() {}, remove() {}, toggle() { return true } },
       setAttribute(key, value) { this.attributes[key] = value },
       getAttribute(key) { return this.attributes[key] },
@@ -59,7 +59,8 @@ function runtime(board, options = {}) {
   vm.runInNewContext(html.match(/<script>([\s\S]*)<\/script>/)[1], context)
   return {
     api: context.window.__anatomyBoard, node, storage, callbacks, document,
-    fire(id, type, event = {}) { for (const fn of node(id).listeners[type] || []) fn(event) }
+    fire(id, type, event = {}) { for (const fn of node(id).listeners[type] || []) fn(event) },
+    fireDocument(type, event = {}) { for (const fn of callbacks.get(type) || []) fn(event) }
   }
 }
 
@@ -67,6 +68,7 @@ test('双击编辑纸页直接包含自然语言和全部数学表达，程序�
   const r = runtime(fixture())
   r.api.canvas.openPaperEditor('input', 'constraint')
   const draft = r.api.canvas.draft
+  assert.equal(r.node('inline-writing').hidden, false)
   assert.equal(draft.kind, 'paper')
   assert.equal(draft.target, 'input')
   assert.equal(draft.value.text, '接收输入。\n检查输入边界。')
@@ -222,7 +224,7 @@ test('未确认纸页在刷新后完整恢复，不会重置陈旧校验基线',
   assert.equal(restored.api.board.elements[0].text, '刷新期间更新的说明。')
 })
 
-test('纸页未确认时项目保存阻止，确认后保存完整人机映射', async () => {
+test('保存有效原位草稿时自动完整确认并保存人机映射', async () => {
   let posted = null
   const r = runtime(fixture(), { globals: { fetch: async (path, options = {}) => {
     if (path === '/api/versions' && options.method === 'POST') {
@@ -233,10 +235,9 @@ test('纸页未确认时项目保存阻止，确认后保存完整人机映射',
   } } })
   await r.api.versions.refresh()
   r.api.canvas.openPaperEditor('input'); r.api.paper.text('待保存的自然语言。'); r.api.paper.equation('primary', 'y = 5x')
-  assert.equal(await r.api.versions.save(), false)
-  assert.equal(posted, null)
-  assert.equal(r.api.canvas.confirm(), true)
   assert.equal(await r.api.versions.save(), true)
+  assert.equal(r.api.canvas.draft, null)
+  assert.equal(r.node('inline-writing').hidden, true)
   assert.equal(posted.board.elements[0].text, '待保存的自然语言。')
   assert.equal(posted.board.elements[0].math, 'y = 5x')
   assert.equal(posted.board.elements[0].anchors[0].sha256, 'b'.repeat(64))
@@ -468,4 +469,303 @@ test('未放入文稿的手写结果阻止纸页完成，明确取消才清除�
   assert.equal([...r.storage.keys()].some(key => key.endsWith(':handwriting')), false)
   assert.equal([...r.storage.keys()].some(key => key.endsWith(':canvas-editor')), false)
   assert.equal(snapshot(r.api.board), boardBefore)
+})
+
+const outsideEvent = (r, excluded = null) => ({
+  target: { closest(selector) { return excluded && selector.includes(excluded) ? r.node(excluded.startsWith('#') ? excluded.slice(1) : excluded) : null } },
+  prevented: false, stopped: false,
+  preventDefault() { this.prevented = true }, stopPropagation() { this.stopped = true }
+})
+
+test('点击画板外部自动完整确认原位文字和多条公式，只形成一步全局撤销', () => {
+  const r = runtime(fixture()), before = snapshot(r.api.board)
+  r.api.canvas.openPaperEditor('input', 'constraint')
+  r.api.paper.text('外部点击后确认这段自然语言。'); r.api.paper.equation('primary', 'y = 3x'); r.api.paper.equation('constraint', 'x > 3')
+  const event = outsideEvent(r); r.fireDocument('pointerdown', event)
+  assert.equal(r.api.canvas.draft, null)
+  assert.equal(r.node('inline-writing').hidden, true)
+  assert.equal(event.prevented, false)
+  const confirmed = snapshot(r.api.board), e = r.api.board.elements[0]
+  assert.equal(e.text, '外部点击后确认这段自然语言。')
+  assert.equal(e.math, 'y = 3x')
+  assert.equal(e.mathExpressions[0].value, 'x > 3')
+  assert.equal(e.mathExpressions[0].id, 'constraint')
+  assert.equal(e.anchors[0].sha256, 'b'.repeat(64))
+  r.api.undo(); assert.equal(snapshot(r.api.board), before)
+  r.api.redo(); assert.equal(snapshot(r.api.board), confirmed)
+})
+
+test('外部点击遇到无效文字、公式或整板映射时保持原位并阻断后续点击动作', () => {
+  for (const mutate of [
+    r => r.api.paper.text('const hidden = 1;'),
+    r => r.api.paper.equation('constraint', String.raw`\frac{x`),
+    r => r.api.change(() => { r.api.board.elements[1].targets = [{ kind: 'organ', id: 'missing' }] })
+  ]) {
+    const r = runtime(fixture()); r.api.canvas.openPaperEditor('input'); r.api.paper.text('有效的人读修改。'); mutate(r)
+    const before = snapshot(r.api.board), draft = snapshot(r.api.canvas.draft.value), event = outsideEvent(r)
+    r.fireDocument('pointerdown', event)
+    assert.equal(event.prevented, true)
+    assert.equal(event.stopped, true)
+    assert.equal(r.node('inline-writing').hidden, false)
+    assert.equal(r.api.canvas.draft.target, 'input')
+    assert.equal(snapshot(r.api.canvas.draft.value), draft)
+    assert.equal(snapshot(r.api.board), before)
+    assert.ok(r.node('paper-error').textContent)
+  }
+})
+
+test('原位自身、操作条、独立对话和撤销按钮点击不误确认正在编辑的内容', () => {
+  for (const excluded of ['#inline-writing', '#inline-actions', 'dialog', '#undo', '#redo']) {
+    const r = runtime(fixture()), before = snapshot(r.api.board)
+    r.api.canvas.openPaperEditor('input'); r.api.paper.text('继续在原位置写说明。')
+    const event = outsideEvent(r, excluded); r.fireDocument('pointerdown', event)
+    assert.equal(r.node('inline-writing').hidden, false, excluded)
+    assert.equal(r.api.canvas.draft.target, 'input', excluded)
+    assert.equal(snapshot(r.api.board), before, excluded)
+    assert.equal(event.prevented, false, excluded)
+  }
+})
+
+test('原位待确认笔迹仍阻断外部完成，保留识别结果和原表达目标', () => {
+  const r = runtime(fixture()), before = snapshot(r.api.board)
+  r.api.canvas.openPaperEditor('input', 'constraint'); r.fire('paper-handwriting', 'click')
+  r.node('ink-result').value = 'x > 30'; r.fire('ink-result', 'input'); r.fire('ink-close', 'click')
+  const event = outsideEvent(r); r.fireDocument('pointerdown', event)
+  assert.equal(event.prevented, true)
+  assert.equal(event.stopped, true)
+  assert.equal(r.node('inline-writing').hidden, false)
+  assert.equal(r.api.canvas.draft.focusExpression, 'constraint')
+  assert.equal(snapshot(r.api.board), before)
+  r.fire('paper-handwriting', 'click')
+  assert.equal(r.node('ink-result').value, 'x > 30')
+})
+
+test('无效可见原位草稿或有效但隐藏的草稿均不能通过保存绕过确认', async () => {
+  for (const mutate of [
+    r => r.api.paper.text('const hidden = 1;'),
+    r => r.api.paper.equation('constraint', String.raw`\sqrt{`),
+    r => r.fire('paper-close', 'click')
+  ]) {
+    let posted = false
+    const r = runtime(fixture(), { globals: { fetch: async (path, options = {}) => {
+      if (path === '/api/versions' && options.method === 'POST') posted = true
+      return { ok: true, json: async () => ({ ok: true, selected: null, versions: [] }) }
+    } } })
+    await r.api.versions.refresh()
+    r.api.canvas.openPaperEditor('input'); r.api.paper.text('等待完整确认的说明。'); mutate(r)
+    const before = snapshot(r.api.board)
+    assert.equal(await r.api.versions.save(), false)
+    assert.equal(posted, false)
+    assert.equal(snapshot(r.api.board), before)
+    assert.equal(r.api.canvas.draft.target, 'input')
+  }
+})
+
+const keyEvent = (r, key, options = {}) => ({
+  key, target: r.node('paper-prose'), prevented: false, stopped: false,
+  preventDefault() { this.prevented = true }, stopPropagation() { this.stopped = true }, ...options
+})
+
+test('公式Enter或Escape真实冒泡只收起数学输入，保留整份原位文字与数学草稿', () => {
+  for (const key of ['Enter', 'Escape']) {
+    const r = runtime(fixture()), before = snapshot(r.api.board)
+    r.api.canvas.openPaperEditor('input', 'constraint'); r.api.paper.text('尚未完成的原位说明。'); r.api.paper.equation('constraint', 'x > 40')
+    const draftBefore = snapshot(r.api.canvas.draft.value), event = keyEvent(r, key, { target: r.node('paper-equation-input') })
+    r.fire('paper-equations', 'keydown', event)
+    if (!event.stopped) r.fire('inline-writing', 'keydown', event)
+    assert.ok(r.api.canvas.draft, key)
+    assert.equal(snapshot(r.api.canvas.draft.value), draftBefore, key)
+    assert.equal(r.api.canvas.draft.focusExpression, null, key)
+    assert.equal(r.node('inline-writing').hidden, false, key)
+    assert.equal(snapshot(r.api.board), before, key)
+  }
+})
+
+test('中文组合输入期间外部确认和快捷键均不会截断或取消候选，结束后仍可确认', () => {
+  const r = runtime(fixture()), before = snapshot(r.api.board)
+  r.api.canvas.openPaperEditor('input'); r.fire('paper-prose', 'compositionstart'); r.api.paper.text('正在输入中文候选。')
+  const draftBefore = snapshot(r.api.canvas.draft.value), event = outsideEvent(r); r.fireDocument('pointerdown', event)
+  assert.equal(event.prevented, true)
+  assert.equal(r.node('inline-writing').hidden, false)
+  for (const [key, options] of [['Escape', {}], ['Enter', { ctrlKey: true }], ['=', { altKey: true }]]) {
+    r.fire('inline-writing', 'keydown', keyEvent(r, key, { isComposing: true, ...options }))
+    assert.ok(r.api.canvas.draft)
+    assert.equal(snapshot(r.api.canvas.draft.value), draftBefore)
+    assert.equal(snapshot(r.api.board), before)
+  }
+  r.fire('paper-prose', 'compositionend'); r.fireDocument('pointerdown', outsideEvent(r))
+  assert.equal(r.api.canvas.draft, null)
+  assert.equal(r.api.board.elements[0].text, '正在输入中文候选。')
+})
+
+test('取消组合输入中的草稿后重新编辑，不残留阻止完成的中文输入锁', () => {
+  const r = runtime(fixture())
+  r.api.canvas.openPaperEditor('input'); r.fire('paper-prose', 'compositionstart'); r.api.paper.text('取消这段候选内容。'); r.api.canvas.cancel()
+  r.api.canvas.openPaperEditor('output'); r.api.paper.text('重新编辑后的有效说明。'); r.fireDocument('pointerdown', outsideEvent(r))
+  assert.equal(r.api.canvas.draft, null)
+  assert.equal(r.api.board.elements[1].text, '重新编辑后的有效说明。')
+  assert.equal(r.api.board.elements[0].text, '接收输入。\n检查输入边界。')
+})
+
+test('原位Alt加等号新增稳定公式并参与本地撤销重做，Escape取消整份未确认草稿', () => {
+  const r = runtime(fixture()), before = snapshot(r.api.board)
+  r.api.canvas.openPaperEditor('input'); r.api.paper.text('在这个部位新增数学表达。')
+  r.fire('inline-writing', 'keydown', keyEvent(r, '=', { altKey: true }))
+  const added = r.api.canvas.draft.value.mathExpressions.at(-1)
+  assert.ok(added.id && !['constraint', 'bound', 'primary'].includes(added.id))
+  assert.equal(added.value, '')
+  assert.equal(r.api.canvas.draft.focusExpression, added.id)
+  r.fire('inline-writing', 'keydown', keyEvent(r, 'z', { ctrlKey: true }))
+  assert.equal(r.api.canvas.draft.value.mathExpressions.length, 2)
+  r.fire('inline-writing', 'keydown', keyEvent(r, 'z', { ctrlKey: true, shiftKey: true }))
+  assert.equal(r.api.canvas.draft.value.mathExpressions.at(-1).id, added.id)
+  r.fire('inline-writing', 'keydown', keyEvent(r, 'Escape'))
+  assert.equal(r.api.canvas.draft, null)
+  assert.equal(r.node('inline-writing').hidden, true)
+  assert.equal(snapshot(r.api.board), before)
+})
+
+const imageFixture = () => {
+  const board = fixture(), e = board.elements[0]
+  e.type = 'image'
+  e.image = {
+    src: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAMAAAACCAIAAAASFvFNAAAAFUlEQVR4nGN0S1nAwMDAwMDAxAADABcWAU7Ylb4oAAAAAElFTkSuQmCC',
+    alt: '输入数据的工程图示。', width: 3, height: 2, extension: { preserve: true }
+  }
+  return board
+}
+
+test('图片原位说明联动自然语言与替代文字，图像数据尺寸和人机映射保留并可整体撤销', () => {
+  const board = imageFixture(), r = runtime(board), before = snapshot(r.api.board)
+  r.api.canvas.openPaperEditor('input'); r.api.paper.text('这张图描述输入与处理结果的关系。')
+  r.fireDocument('pointerdown', outsideEvent(r))
+  const e = r.api.board.elements[0]
+  assert.equal(e.text, '这张图描述输入与处理结果的关系。')
+  assert.equal(e.image.alt, e.text)
+  for (const key of ['src', 'width', 'height', 'extension']) assert.deepEqual(plain(e.image[key]), board.elements[0].image[key], key)
+  for (const key of ['implementation', 'anchors', 'targets', 'mathExpressions']) assert.deepEqual(plain(e[key]), board.elements[0][key], key)
+  r.api.undo(); assert.equal(snapshot(r.api.board), before)
+})
+
+test('图片说明拒绝覆盖并发替代文字，未关联的图像扩展修改仍会保留', () => {
+  const r = runtime(imageFixture())
+  r.api.canvas.openPaperEditor('input'); r.api.paper.text('等待核对的图片说明。')
+  r.api.change(() => { r.api.board.elements[0].image.alt = '新版图片说明。' })
+  const before = snapshot(r.api.board), event = outsideEvent(r); r.fireDocument('pointerdown', event)
+  assert.equal(event.prevented, true)
+  assert.equal(snapshot(r.api.board), before)
+  assert.equal(r.api.canvas.draft.value.text, '等待核对的图片说明。')
+  r.api.canvas.cancel(); r.api.canvas.openPaperEditor('input'); r.api.paper.text('校对后的图片说明。')
+  r.api.change(() => { r.api.board.elements[0].image.extension.concurrent = '保留新证据' })
+  r.fireDocument('pointerdown', outsideEvent(r))
+  assert.equal(r.api.board.elements[0].image.alt, '校对后的图片说明。')
+  assert.equal(r.api.board.elements[0].image.extension.concurrent, '保留新证据')
+})
+
+test('旋转图片说明与分区标题的原位编辑层绕同一图元中心转动，缩放后不偏移', () => {
+  for (const type of ['image', 'frame']) {
+    const board = type === 'image' ? imageFixture() : fixture(), e = board.elements[0]
+    e.type = type; e.rotation = 90; e.height = 400
+    const r = runtime(board), surface = r.node('surface')
+    surface.getBoundingClientRect = () => ({ left: 75, top: 50, width: 1000, height: 700 })
+    surface.parentElement = { getBoundingClientRect: () => ({ left: 25, top: 10, width: 1100, height: 750 }) }
+    Object.assign(r.api.view, { x: 25, y: 40, scale: .75 })
+    r.api.canvas.openPaperEditor('input')
+    const panel = r.node('inline-writing'), origin = (panel.style.transformOrigin || '50% 50%').split(/\s+/)
+    const local = (value, size) => parseFloat(value) * (value.endsWith('%') ? size / 100 : 1)
+    const pivotX = parseFloat(panel.style.left) + local(origin[0], parseFloat(panel.style.width))
+    const pivotY = parseFloat(panel.style.top) + local(origin[1], parseFloat(panel.style.height))
+    const expectedX = 50 + r.api.view.x + (e.x + e.width / 2) * r.api.view.scale
+    const expectedY = 40 + r.api.view.y + (e.y + e.height / 2) * r.api.view.scale
+    assert.ok(Math.abs(pivotX - expectedX) < .01, type + ' 横向旋转中心')
+    assert.ok(Math.abs(pivotY - expectedY) < .01, type + ' 纵向旋转中心')
+    assert.equal(panel.style.transform, 'rotate(90deg)')
+  }
+})
+
+test('图片客户端合法PNG新增图元保留原映射，默认避让并可一步撤销重做，显式位置不改写', () => {
+  const board = fixture(); board.elements[0].width = 800; board.elements[0].height = 500; board.elements[1].x = 900
+  const r = runtime(board), before = snapshot(r.api.board), image = imageFixture().elements[0].image
+  assert.equal(r.api.images.insert([image]), true)
+  assert.equal(r.api.board.elements.length, 3)
+  const added = r.api.board.elements.at(-1)
+  assert.equal(added.type, 'image')
+  assert.deepEqual(plain(added.image), image)
+  assert.deepEqual(plain(r.api.board.elements.slice(0, 2)), board.elements)
+  for (const e of r.api.board.elements.slice(0, 2)) {
+    const overlap = added.x < e.x + e.width && added.x + added.width > e.x && added.y < e.y + e.height && added.y + added.height > e.y
+    assert.equal(overlap, false)
+  }
+  const confirmed = snapshot(r.api.board), view = r.api.view
+  assert.ok(view.x + added.x * view.scale >= 0)
+  assert.ok(view.y + added.y * view.scale >= 0)
+  assert.ok(view.x + (added.x + added.width) * view.scale <= 1000)
+  assert.ok(view.y + (added.y + added.height) * view.scale <= 700)
+  r.api.undo(); assert.equal(snapshot(r.api.board), before)
+  r.api.redo(); assert.equal(snapshot(r.api.board), confirmed)
+  const explicit = { x: 19, y: 23 }
+  assert.equal(r.api.images.insert([image], explicit), true)
+  assert.equal(r.api.board.elements.at(-1).x, explicit.x)
+  assert.equal(r.api.board.elements.at(-1).y, explicit.y)
+})
+
+function paddedImageSource(totalBytes) {
+  const original = Buffer.from(imageFixture().elements[0].image.src.split(',')[1], 'base64'), padding = totalBytes - original.length - 12
+  const chunk = Buffer.alloc(padding + 12); chunk.writeUInt32BE(padding, 0); chunk.write('tEXt', 4, 'ascii')
+  return 'data:image/png;base64,' + Buffer.concat([original.subarray(0, -12), chunk, original.subarray(-12)]).toString('base64')
+}
+
+test('图片客户端对非法图片与超过总量的混合整批拒绝，没有部分图元或历史写入', () => {
+  const r = runtime(fixture()), before = snapshot(r.api.board), valid = imageFixture().elements[0].image
+  const invalid = { ...valid, src: 'data:image/svg+xml;base64,PHN2Zz48L3N2Zz4=' }
+  assert.equal(r.api.images.insert([valid, invalid]), false)
+  assert.equal(snapshot(r.api.board), before)
+  const large = { ...valid, src: paddedImageSource(4.5 * 1024 * 1024) }
+  assert.equal(r.api.images.insert([large, large]), false)
+  assert.equal(snapshot(r.api.board), before)
+  assert.equal(r.api.selected.length, 0)
+  r.api.undo(); assert.equal(snapshot(r.api.board), before)
+})
+
+test('图片客户端拒绝无效原位草稿，有效草稿先完整确认再独立插入并分步撤销', () => {
+  const r = runtime(fixture()), before = snapshot(r.api.board), image = imageFixture().elements[0].image
+  r.api.canvas.openPaperEditor('input'); r.api.paper.text('const invalid = 1;')
+  assert.equal(r.api.images.insert([image]), false)
+  assert.equal(snapshot(r.api.board), before)
+  assert.equal(r.node('inline-writing').hidden, false)
+  assert.equal(r.api.canvas.draft.value.text, 'const invalid = 1;')
+  r.api.paper.text('完成说明后插入工程图片。'); r.api.paper.equation('constraint', 'x > 50')
+  assert.equal(r.api.images.insert([image]), true)
+  assert.equal(r.api.canvas.draft, null)
+  assert.equal(r.api.board.elements.length, 3)
+  assert.equal(r.api.board.elements[0].text, '完成说明后插入工程图片。')
+  assert.equal(r.api.board.elements[0].mathExpressions[0].value, 'x > 50')
+  assert.deepEqual(plain(r.api.board.elements[0].implementation), fixture().elements[0].implementation)
+  r.api.undo()
+  assert.equal(r.api.board.elements.length, 2)
+  assert.equal(r.api.board.elements[0].text, '完成说明后插入工程图片。')
+  r.api.undo(); assert.equal(snapshot(r.api.board), before)
+})
+
+test('图片FileReader异步读取期间选定版本revision变化，拒绝插入并保留当前画板', async () => {
+  const readers = []; let revision = 'before-read'
+  class DeferredFileReader {
+    constructor() { readers.push(this) }
+    readAsDataURL(file) { this.file = file }
+  }
+  const r = runtime(fixture(), { globals: {
+    FileReader: DeferredFileReader,
+    fetch: async () => ({ ok: true, json: async () => ({ ok: true, selected: { id: 'selected', revision }, versions: [] }) })
+  } })
+  await r.api.versions.refresh()
+  const before = snapshot(r.api.board), image = imageFixture().elements[0].image
+  const pending = r.api.images.importFiles([{ type: 'image/png', size: 84, name: '工程图.png' }])
+  assert.equal(readers.length, 1)
+  revision = 'after-read'; await r.api.versions.refresh()
+  readers[0].result = image.src; readers[0].onload()
+  assert.equal(await pending, false)
+  assert.equal(snapshot(r.api.board), before)
+  assert.equal(r.api.board.elements.some(e => e.type === 'image'), false)
+  assert.match(r.node('toast').textContent, /版本.*变化/)
+  r.api.undo(); assert.equal(snapshot(r.api.board), before)
 })

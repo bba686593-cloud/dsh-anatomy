@@ -28,6 +28,7 @@ os.environ.setdefault('PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK', 'True')
 os.environ.setdefault('PADDLE_PDX_MODEL_SOURCE', 'BOS')
 os.environ.setdefault('FLAGS_use_mkldnn', '0')
 MAX_BODY = 4 * 1024 * 1024
+MAX_VERSION_BODY = 12 * 1024 * 1024
 
 
 def decode_image(data):
@@ -170,8 +171,11 @@ def make_server(board_file, port, engine=None, instance_id=None):
                 return self.send(415, dict(ok=False, error='请求需要 JSON。'))
             try:
                 length = int(self.headers.get('Content-Length', 0))
-                if length <= 0 or length > MAX_BODY:
-                    raise ValueError('笔迹数据为空或过大。')
+                limit = MAX_BODY if self.path == '/api/recognize' else MAX_VERSION_BODY
+                if length <= 0:
+                    raise ValueError('请求数据为空。')
+                if length > limit:
+                    return self.send(413, dict(ok=False, error='笔迹请求不能超过 4 MiB。' if self.path == '/api/recognize' else '画板请求不能超过 12 MiB。'))
                 self.connection.settimeout(15)
                 payload = json.loads(self.rfile.read(length))
                 if self.path != '/api/recognize':
