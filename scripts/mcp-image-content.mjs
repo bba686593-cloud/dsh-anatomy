@@ -34,7 +34,11 @@ export function mcpToolResult(name, value) {
         sources.set(src,record)
       }catch{}
     }
-    if(record.parsed)totalBytes+=record.parsed.bytes
+    if(record.parsed&&!record.counted){totalBytes+=record.parsed.bytes;record.counted=true}
+    const original=element.formulaGraphic?.originalImage?.src
+    if(typeof original==='string'&&!sources.has(original)){
+      try{const parsed=parseImageSource(original),hash=createHash('sha256').update(Buffer.from(original.slice(original.indexOf(',')+1),'base64')).digest('hex');sources.set(original,{parsed,hash,data:original.slice(original.indexOf(',')+1),valid:true,counted:true,summary:'[内嵌图形 '+parsed.width+'×'+parsed.height+'；sha256:'+hash+'；完整 src 保留在 structuredContent]'});totalBytes+=parsed.bytes}catch{}
+    }
     // A duplicate resource may have different alt/dimensions on another node;
     // validate the node independently before attaching its visual content.
     if(record.valid&&!imageDiagnostics(image).length&&!programTrace(image.alt)){
@@ -43,7 +47,7 @@ export function mcpToolResult(name, value) {
     }else notes.push({element:element.id,note:'图片数据或说明未通过校验，未附加视觉内容。'})
   }
   if(totalBytes>MAX_BOARD_IMAGE_BYTES){pictures.clear();notes.push({note:'当前画板内嵌图片超过 8 MiB，未附加视觉内容；完整数据保留在 structuredContent。'})}
-  const shorten=function(key,next){return key==='image'&&next&&typeof next==='object'&&typeof next.src==='string'&&sources.has(next.src)?{...next,src:sources.get(next.src).summary}:next}
+  const shorten=function(key,next){if(['image','originalImage'].includes(key)&&next&&typeof next==='object'&&typeof next.src==='string'){let record=sources.get(next.src);if(!record){try{const parsed=parseImageSource(next.src),hash=createHash('sha256').update(Buffer.from(next.src.slice(next.src.indexOf(',')+1),'base64')).digest('hex');record={summary:'[原始图形 '+parsed.width+'×'+parsed.height+'；sha256:'+hash+'；完整 src 保留在 structuredContent]'}}catch{record={summary:'[原图完整数据保留在 structuredContent]'}}}return {...next,src:record.summary}}return next}
   let displayed=value
   if(digestLines){
     for(const item of elements)digestLines[item.index]=item.prefix+JSON.stringify(item.element,shorten)

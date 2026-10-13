@@ -64,9 +64,19 @@ function runtime(board, options = {}) {
   }
 }
 
-test('双击编辑纸页直接包含自然语言和全部数学表达，程序映射保持独立', () => {
+// Explicit legacy APIs keep old saved handwriting sessions testable; these are
+// not the prose editor's drawing buttons.
+function openLegacyText(r, expression) {
+  r.api.canvas.openPaperEditor('input')
+  r.api.canvas.draft.focusExpression = expression
+}
+function legacyDraftInk(r) {
+  r.api.math.openHandwriting({ paper: true, expression: r.api.canvas.draft.focusExpression || null })
+}
+
+test('原位编辑只提供自然语言输入，公式留在画板而机读字段完整保留', () => {
   const r = runtime(fixture())
-  r.api.canvas.openPaperEditor('input', 'constraint')
+  r.api.canvas.openPaperEditor('input')
   const draft = r.api.canvas.draft
   assert.equal(r.node('inline-writing').hidden, false)
   assert.equal(draft.kind, 'paper')
@@ -74,6 +84,9 @@ test('双击编辑纸页直接包含自然语言和全部数学表达，程序�
   assert.equal(draft.value.text, '接收输入。\n检查输入边界。')
   assert.equal(draft.value.math, 'y = f(x)')
   assert.deepEqual(plain(draft.value.mathExpressions.map(f => f.id)), ['constraint', 'bound'])
+  assert.equal(r.node('paper-equations').innerHTML, '')
+  assert.equal(r.node('paper-equations').hidden, true)
+  assert.equal(r.node('paper-equations').style.display, 'none')
   assert.ok(!r.node('paper-prose').innerHTML.includes('return process'))
   assert.ok(!r.node('world').innerHTML.includes('return process'))
 })
@@ -122,7 +135,7 @@ test('纯文本修改不会滤除尚为空的额外数学表达及其原始笔�
   assert.deepEqual(plain(r.api.board.elements[0].mathExpressions.at(-1)), board.elements[0].mathExpressions.at(-1))
 })
 
-test('纸页文字含程序或任何一条公式解析失败，整页都不确认', () => {
+test('文字草稿文字含程序或任何一条公式解析失败，整页都不确认', () => {
   for (const mutate of [
     r => r.api.paper.text('const input = 1;'),
     r => r.api.paper.equation('primary', String.raw`\frac{x`),
@@ -148,7 +161,7 @@ test('整页确认仍校验全部画板，其他部位的失效映射不能被�
   assert.equal(r.api.board.elements[0].text, '接收输入。\n检查输入边界。')
 })
 
-test('纸页拒绝陈旧文字或数学覆盖，保留当前版本和待核对草稿', () => {
+test('文字草稿拒绝陈旧文字或数学覆盖，保留当前版本和待核对草稿', () => {
   for (const mutate of [
     e => { e.text = '另一版本的新说明。' },
     e => { e.math = 'y = 3x' },
@@ -165,7 +178,7 @@ test('纸页拒绝陈旧文字或数学覆盖，保留当前版本和待核对�
   }
 })
 
-test('纸页确认只修改人读层，并发程序映射与位置修改原样保留', () => {
+test('文字草稿确认只修改人读层，并发程序映射与位置修改原样保留', () => {
   const r = runtime(fixture())
   r.api.canvas.openPaperEditor('input'); r.api.paper.text('已核对的人读说明。'); r.api.paper.equation('bound', 'y ≤ 20')
   r.api.change(() => { r.api.board.elements[0].x = 150; r.api.board.elements[0].implementation.note = '新版程序依据'; r.api.board.elements[0].anchors[0].reason = '重新核对的源码用途' })
@@ -188,7 +201,7 @@ test('确认整页文字与多条公式形成一次全局撤销重做，取消�
   r.api.undo(); assert.equal(snapshot(r.api.board), before)
 })
 
-test('纸页本地撤销重做跨文字和数学恢复草稿，新增编辑清除重做分支', () => {
+test('文字草稿本地撤销重做跨文字和数学恢复草稿，新增编辑清除重做分支', () => {
   const r = runtime(fixture()), before = snapshot(r.api.board)
   r.api.canvas.openPaperEditor('input')
   const start = snapshot(r.api.canvas.draft.value)
@@ -210,7 +223,7 @@ test('纸页本地撤销重做跨文字和数学恢复草稿，新增编辑清�
   assert.equal(snapshot(r.api.board), before)
 })
 
-test('未确认纸页在刷新后完整恢复，不会重置陈旧校验基线', () => {
+test('未确认文字草稿在刷新后完整恢复，不会重置陈旧校验基线', () => {
   const board = fixture(), r = runtime(board)
   r.api.canvas.openPaperEditor('input'); r.api.paper.text('刷新后保留的说明。'); r.api.paper.equation('constraint', 'x > 4'); r.api.paper.insert('z = y + 2')
   const draft = snapshot(r.api.canvas.draft), key = [...r.storage.keys()].find(key => key.endsWith(':canvas-editor'))
@@ -245,11 +258,11 @@ test('保存有效原位草稿时自动完整确认并保存人机映射', async
   assert.deepEqual(boardDiagnostics(posted.board, [{ id: 'source' }]), [])
 })
 
-test('纸页中文手写只追加到当前草稿，完成编辑前不写画板并可本地撤销', () => {
+test('文字草稿中文手写只追加到当前草稿，完成编辑前不写画板并可本地撤销', () => {
   const r = runtime(fixture()), boardBefore = snapshot(r.api.board)
   r.api.canvas.openPaperEditor('input'); r.api.paper.text('当前校对的说明。')
   const draftBefore = snapshot(r.api.canvas.draft.value)
-  r.fire('paper-handwriting', 'click')
+  legacyDraftInk(r)
   assert.equal(r.node('ink-destination').value, 'paper')
   assert.equal(r.node('ink-destination').hidden, true)
   r.fire('ink-mode-text', 'click')
@@ -268,11 +281,11 @@ test('纸页中文手写只追加到当前草稿，完成编辑前不写画板�
   assert.equal(r.api.board.elements[0].anchors[0].sha256, 'b'.repeat(64))
 })
 
-test('纸页手写编辑选定公式使用当前草稿，稳定标识与其他笔迹证据保留', () => {
+test('文字草稿手写编辑选定公式使用当前草稿，稳定标识与其他笔迹证据保留', () => {
   const r = runtime(fixture()), boardBefore = snapshot(r.api.board)
-  r.api.canvas.openPaperEditor('input', 'constraint'); r.api.paper.equation('constraint', 'x > 10')
+  openLegacyText(r, 'constraint'); r.api.paper.equation('constraint', 'x > 10')
   const draftBefore = snapshot(r.api.canvas.draft.value)
-  r.fire('paper-handwriting', 'click')
+  legacyDraftInk(r)
   assert.equal(r.api.math.mode, 'math')
   assert.equal(r.node('ink-result').value, 'x > 10')
   assert.deepEqual(plain(r.api.math.strokes), fixture().elements[0].mathExpressions[0].handwriting.strokes)
@@ -289,9 +302,9 @@ test('纸页手写编辑选定公式使用当前草稿，稳定标识与其他�
   r.api.paper.undo(); assert.equal(snapshot(r.api.canvas.draft.value), draftBefore)
 })
 
-test('纸页手写新公式只新增草稿表达，原公式和程序映射均保留', () => {
+test('文字草稿手写新公式只新增草稿表达，原公式和程序映射均保留', () => {
   const r = runtime(fixture()), boardBefore = snapshot(r.api.board)
-  r.api.canvas.openPaperEditor('input'); r.fire('paper-handwriting', 'click'); r.fire('ink-mode-math', 'click')
+  r.api.canvas.openPaperEditor('input'); legacyDraftInk(r); r.fire('ink-mode-math', 'click')
   r.node('ink-result').value = 'z = x + 2'; r.fire('ink-result', 'input'); r.fire('ink-apply', 'click')
   assert.equal(snapshot(r.api.board), boardBefore)
   const d = r.api.canvas.draft.value, added = d.mathExpressions.at(-1)
@@ -305,9 +318,9 @@ test('纸页手写新公式只新增草稿表达，原公式和程序映射均�
   assert.equal(r.api.board.elements[0].implementation.code, 'return process(input);')
 })
 
-test('识别期间纸页已变化则拒绝陈旧结果，仍保留识别结果和纸页草稿', () => {
+test('兼容旧识别草稿期间文字已变化则拒绝陈旧结果，仍保留识别结果和纸页草稿', () => {
   const r = runtime(fixture()), boardBefore = snapshot(r.api.board)
-  r.api.canvas.openPaperEditor('input', 'constraint'); r.fire('paper-handwriting', 'click')
+  openLegacyText(r, 'constraint'); legacyDraftInk(r)
   r.node('ink-result').value = 'x > 12'; r.fire('ink-result', 'input')
   r.api.paper.text('识别期间继续修改了文稿。')
   const changed = snapshot(r.api.canvas.draft.value)
@@ -319,7 +332,7 @@ test('识别期间纸页已变化则拒绝陈旧结果，仍保留识别结果�
   assert.match(r.node('ink-feedback').textContent, /变化|重新/)
 })
 
-test('纸页粘贴只取纯文本，HTML和程序粘贴均不能执行或绕过确认校验', () => {
+test('文字草稿粘贴只取纯文本，HTML和程序粘贴均不能执行或绕过确认校验', () => {
   const r = runtime(fixture()), formats = [], commands = []
   r.api.canvas.openPaperEditor('input')
   r.document.execCommand = (command, ui, text) => {
@@ -348,15 +361,15 @@ test('纸页粘贴只取纯文本，HTML和程序粘贴均不能执行或绕过�
   assert.equal(r.api.canvas.draft.value.text, 'const input = 1;')
 })
 
-test('纸页新中文手写输入从空结果开始，不把原说明重复追加', () => {
+test('文字草稿新中文手写输入从空结果开始，不把原说明重复追加', () => {
   const r = runtime(fixture())
-  r.api.canvas.openPaperEditor('input'); r.fire('paper-handwriting', 'click')
+  r.api.canvas.openPaperEditor('input'); legacyDraftInk(r)
   assert.equal(r.api.math.mode, 'text')
   assert.equal(r.node('ink-result').value, '')
   assert.equal(r.api.math.strokes.length, 0)
 })
 
-test('纸页历史缓存损坏时保留当前文稿而不让恢复或撤销崩溃', () => {
+test('文字草稿历史缓存损坏时保留当前文稿而不让恢复或撤销崩溃', () => {
   const seed = runtime(fixture())
   seed.api.canvas.openPaperEditor('input'); seed.api.paper.text('有效但历史损坏的草稿。')
   const key = [...seed.storage.keys()].find(key => key.endsWith(':canvas-editor'))
@@ -372,11 +385,11 @@ test('纸页历史缓存损坏时保留当前文稿而不让恢复或撤销崩�
 
 test('刷新后未确认手写公式恢复结果及原表达目标，不能静默改成追加或丢笔迹', () => {
   const board = fixture(), r = runtime(board)
-  r.api.canvas.openPaperEditor('input', 'constraint'); r.api.paper.equation('constraint', 'x > 10')
-  r.fire('paper-handwriting', 'click')
+  openLegacyText(r, 'constraint'); r.api.paper.equation('constraint', 'x > 10')
+  legacyDraftInk(r)
   r.node('ink-result').value = 'x > 15'; r.fire('ink-result', 'input'); r.fire('ink-close', 'click'); r.fire('paper-close', 'click')
   assert.ok([...r.storage.keys()].some(key => key.endsWith(':handwriting')))
-  const restored = runtime(board, { storage: r.storage }); restored.api.canvas.resume(); restored.fire('paper-handwriting', 'click')
+  const restored = runtime(board, { storage: r.storage }); restored.api.canvas.resume(); legacyDraftInk(restored)
   assert.equal(restored.api.math.mode, 'math')
   assert.equal(restored.node('ink-result').value, 'x > 15')
   assert.deepEqual(plain(restored.api.math.strokes), board.elements[0].mathExpressions[0].handwriting.strokes)
@@ -405,15 +418,15 @@ test('恢复的纸页缓存混入跨域属性也只能修改人读字段，不�
   for (const field of ['implementation', 'anchors', 'targets', 'extension']) assert.deepEqual(plain(e[field]), before[field])
 })
 
-test('纸页内容未改但有未确认手写候选，关闭刷新仍恢复纸页和准确公式目标', () => {
+test('文字草稿内容未改但有未确认手写候选，关闭刷新仍恢复纸页和准确公式目标', () => {
   const board = fixture(), r = runtime(board)
-  r.api.canvas.openPaperEditor('input', 'constraint'); r.fire('paper-handwriting', 'click')
+  openLegacyText(r, 'constraint'); legacyDraftInk(r)
   r.node('ink-result').value = 'x > 18'; r.fire('ink-result', 'input'); r.fire('ink-close', 'click'); r.fire('paper-close', 'click')
   assert.ok([...r.storage.keys()].some(key => key.endsWith(':canvas-editor')))
   assert.ok([...r.storage.keys()].some(key => key.endsWith(':handwriting')))
   const restored = runtime(board, { storage: r.storage })
   assert.equal(restored.api.canvas.draft.kind, 'paper')
-  restored.api.canvas.resume(); restored.fire('paper-handwriting', 'click')
+  restored.api.canvas.resume(); legacyDraftInk(restored)
   assert.equal(restored.api.math.mode, 'math')
   assert.equal(restored.node('ink-result').value, 'x > 18')
   assert.deepEqual(plain(restored.api.math.strokes), board.elements[0].mathExpressions[0].handwriting.strokes)
@@ -427,7 +440,7 @@ test('纸页内容未改但有未确认手写候选，关闭刷新仍恢复纸�
 test('未确认手写候选占有原纸页草稿，跨部位或独立编辑不能替换恢复上下文', () => {
   for (const openOther of [r => r.api.canvas.openPaperEditor('output'), r => r.api.canvas.openProgram('input'), r => r.fire('open-handwriting', 'click')]) {
     const board = fixture(), r = runtime(board)
-    r.api.canvas.openPaperEditor('input', 'constraint'); r.fire('paper-handwriting', 'click')
+    openLegacyText(r, 'constraint'); legacyDraftInk(r)
     r.node('ink-result').value = 'x > 19'; r.fire('ink-result', 'input'); r.fire('ink-close', 'click'); r.fire('paper-close', 'click')
     const draftBefore = snapshot(r.api.canvas.draft), inkKey = [...r.storage.keys()].find(key => key.endsWith(':handwriting'))
     const inkBefore = r.storage.get(inkKey)
@@ -436,7 +449,7 @@ test('未确认手写候选占有原纸页草稿，跨部位或独立编辑不�
     assert.equal(r.storage.get(inkKey), inkBefore)
     assert.equal(snapshot(r.api.board), snapshot(board))
     const restored = runtime(board, { storage: r.storage })
-    restored.api.canvas.resume(); restored.fire('paper-handwriting', 'click')
+    restored.api.canvas.resume(); legacyDraftInk(restored)
     assert.equal(restored.node('ink-result').value, 'x > 19')
     restored.fire('ink-apply', 'click')
     assert.equal(restored.api.canvas.draft.value.mathExpressions[0].value, 'x > 19')
@@ -446,7 +459,7 @@ test('未确认手写候选占有原纸页草稿，跨部位或独立编辑不�
 
 test('只打开已有公式笔迹不产生未确认手写，正文编辑仍可完成', () => {
   const r = runtime(fixture())
-  r.api.canvas.openPaperEditor('input', 'constraint'); r.fire('paper-handwriting', 'click')
+  openLegacyText(r, 'constraint'); legacyDraftInk(r)
   assert.equal(r.api.canvas.draft.hasInkDraft, false)
   assert.equal(r.node('ink-result').value, 'x ≥ 0')
   r.fire('ink-close', 'click'); r.api.paper.text('只改正文，已有笔迹未修改。')
@@ -457,7 +470,7 @@ test('只打开已有公式笔迹不产生未确认手写，正文编辑仍可�
 
 test('未放入文稿的手写结果阻止纸页完成，明确取消才清除所属笔迹缓存', () => {
   const r = runtime(fixture()), boardBefore = snapshot(r.api.board)
-  r.api.canvas.openPaperEditor('input', 'constraint'); r.fire('paper-handwriting', 'click')
+  openLegacyText(r, 'constraint'); legacyDraftInk(r)
   r.node('ink-result').value = 'x > 20'; r.fire('ink-result', 'input'); r.fire('ink-close', 'click')
   assert.equal(r.api.canvas.draft.hasInkDraft, true)
   assert.equal(r.api.canvas.confirm(), false)
@@ -479,7 +492,7 @@ const outsideEvent = (r, excluded = null) => ({
 
 test('点击画板外部自动完整确认原位文字和多条公式，只形成一步全局撤销', () => {
   const r = runtime(fixture()), before = snapshot(r.api.board)
-  r.api.canvas.openPaperEditor('input', 'constraint')
+  openLegacyText(r, 'constraint')
   r.api.paper.text('外部点击后确认这段自然语言。'); r.api.paper.equation('primary', 'y = 3x'); r.api.paper.equation('constraint', 'x > 3')
   const event = outsideEvent(r); r.fireDocument('pointerdown', event)
   assert.equal(r.api.canvas.draft, null)
@@ -528,7 +541,7 @@ test('原位自身、操作条、独立对话和撤销按钮点击不误确认�
 
 test('原位待确认笔迹仍阻断外部完成，保留识别结果和原表达目标', () => {
   const r = runtime(fixture()), before = snapshot(r.api.board)
-  r.api.canvas.openPaperEditor('input', 'constraint'); r.fire('paper-handwriting', 'click')
+  openLegacyText(r, 'constraint'); legacyDraftInk(r)
   r.node('ink-result').value = 'x > 30'; r.fire('ink-result', 'input'); r.fire('ink-close', 'click')
   const event = outsideEvent(r); r.fireDocument('pointerdown', event)
   assert.equal(event.prevented, true)
@@ -536,7 +549,7 @@ test('原位待确认笔迹仍阻断外部完成，保留识别结果和原表�
   assert.equal(r.node('inline-writing').hidden, false)
   assert.equal(r.api.canvas.draft.focusExpression, 'constraint')
   assert.equal(snapshot(r.api.board), before)
-  r.fire('paper-handwriting', 'click')
+  legacyDraftInk(r)
   assert.equal(r.node('ink-result').value, 'x > 30')
 })
 
@@ -566,18 +579,21 @@ const keyEvent = (r, key, options = {}) => ({
   preventDefault() { this.prevented = true }, stopPropagation() { this.stopped = true }, ...options
 })
 
-test('公式Enter或Escape真实冒泡只收起数学输入，保留整份原位文字与数学草稿', () => {
-  for (const key of ['Enter', 'Escape']) {
-    const r = runtime(fixture()), before = snapshot(r.api.board)
-    r.api.canvas.openPaperEditor('input', 'constraint'); r.api.paper.text('尚未完成的原位说明。'); r.api.paper.equation('constraint', 'x > 40')
-    const draftBefore = snapshot(r.api.canvas.draft.value), event = keyEvent(r, key, { target: r.node('paper-equation-input') })
-    r.fire('paper-equations', 'keydown', event)
-    if (!event.stopped) r.fire('inline-writing', 'keydown', event)
-    assert.ok(r.api.canvas.draft, key)
-    assert.equal(snapshot(r.api.canvas.draft.value), draftBefore, key)
-    assert.equal(r.api.canvas.draft.focusExpression, null, key)
-    assert.equal(r.node('inline-writing').hidden, false, key)
-    assert.equal(snapshot(r.api.board), before, key)
+test('点击公式只选择图形，不创建数学输入或占用文字编辑层', () => {
+  for (const configure of [
+    e => {},
+    e => { e.type = 'math'; e.text = '' },
+    e => { e.type = 'image'; e.image = imageFixture().elements[0].image; e.text = ''; e.formulaGraphic = { kind: 'formula' } }
+  ]) {
+    const board = fixture(); configure(board.elements[0])
+    const r = runtime(board), before = snapshot(r.api.board)
+    assert.equal(r.api.canvas.openPaperEditor('input', board.elements[0].type === 'rect' ? 'constraint' : null), false)
+    assert.equal(r.api.canvas.draft, null)
+    assert.equal(r.node('inline-writing').hidden, true)
+    assert.equal(r.node('paper-equations').innerHTML, '')
+    assert.deepEqual(plain(r.api.selected), ['input'])
+    assert.equal(snapshot(r.api.board), before)
+    assert.match(r.node('toast').textContent, /图形/)
   }
 })
 
@@ -607,22 +623,32 @@ test('取消组合输入中的草稿后重新编辑，不残留阻止完成的�
   assert.equal(r.api.board.elements[0].text, '接收输入。\n检查输入边界。')
 })
 
-test('原位Alt加等号新增稳定公式并参与本地撤销重做，Escape取消整份未确认草稿', () => {
+test('原位公式快捷入口先确认文字再开公式库，文字层始终没有数学输入', () => {
   const r = runtime(fixture()), before = snapshot(r.api.board)
-  r.api.canvas.openPaperEditor('input'); r.api.paper.text('在这个部位新增数学表达。')
+  r.api.canvas.openPaperEditor('input'); r.api.paper.text('完成这段自然语言后插入公式图形。')
   r.fire('inline-writing', 'keydown', keyEvent(r, '=', { altKey: true }))
-  const added = r.api.canvas.draft.value.mathExpressions.at(-1)
-  assert.ok(added.id && !['constraint', 'bound', 'primary'].includes(added.id))
-  assert.equal(added.value, '')
-  assert.equal(r.api.canvas.draft.focusExpression, added.id)
-  r.fire('inline-writing', 'keydown', keyEvent(r, 'z', { ctrlKey: true }))
-  assert.equal(r.api.canvas.draft.value.mathExpressions.length, 2)
-  r.fire('inline-writing', 'keydown', keyEvent(r, 'z', { ctrlKey: true, shiftKey: true }))
-  assert.equal(r.api.canvas.draft.value.mathExpressions.at(-1).id, added.id)
-  r.fire('inline-writing', 'keydown', keyEvent(r, 'Escape'))
+  assert.equal(r.api.canvas.draft, null)
+  assert.equal(r.node('formula-dialog').open, true)
+  assert.equal(r.node('paper-equations').innerHTML, '')
+  assert.equal(r.api.board.elements[0].text, '完成这段自然语言后插入公式图形。')
+  assert.deepEqual(plain(r.api.board.elements[0].mathExpressions), fixture().elements[0].mathExpressions)
+  r.api.undo(); assert.equal(snapshot(r.api.board), before)
+})
+
+test('原位手写入口完成有效文字后进入画笔，无效文字仍保留原位草稿', () => {
+  const r = runtime(fixture()), before = snapshot(r.api.board)
+  r.api.canvas.openPaperEditor('input'); r.api.paper.text('const hidden = 1;')
+  r.fire('paper-handwriting', 'click')
+  assert.equal(r.api.canvas.draft.value.text, 'const hidden = 1;')
+  assert.equal(r.node('ink-dialog').open, false)
+  assert.equal(snapshot(r.api.board), before)
+  r.api.paper.text('完成说明后直接画。'); r.fire('paper-handwriting', 'click')
   assert.equal(r.api.canvas.draft, null)
   assert.equal(r.node('inline-writing').hidden, true)
-  assert.equal(snapshot(r.api.board), before)
+  assert.equal(r.node('ink-dialog').open, false)
+  assert.equal(r.api.board.elements[0].text, '完成说明后直接画。')
+  assert.match(r.node('tool-note').textContent, /直接画|笔迹/)
+  r.api.undo(); assert.equal(snapshot(r.api.board), before)
 })
 
 const imageFixture = () => {
@@ -721,7 +747,8 @@ test('图片客户端对非法图片与超过总量的混合整批拒绝，没�
   assert.equal(r.api.images.insert([valid, invalid]), false)
   assert.equal(snapshot(r.api.board), before)
   const large = { ...valid, src: paddedImageSource(4.5 * 1024 * 1024) }
-  assert.equal(r.api.images.insert([large, large]), false)
+  const other = { ...valid, src: paddedImageSource(4.5 * 1024 * 1024 + 1) }
+  assert.equal(r.api.images.insert([large, other]), false)
   assert.equal(snapshot(r.api.board), before)
   assert.equal(r.api.selected.length, 0)
   r.api.undo(); assert.equal(snapshot(r.api.board), before)
@@ -768,4 +795,71 @@ test('图片FileReader异步读取期间选定版本revision变化，拒绝插�
   assert.equal(r.api.board.elements.some(e => e.type === 'image'), false)
   assert.match(r.node('toast').textContent, /版本.*变化/)
   r.api.undo(); assert.equal(snapshot(r.api.board), before)
+})
+
+function attachTextSlot(r, options = {}) {
+  const parent = { style: { transform: options.fit || 'matrix(0.6,0,0,0.6,0,0)' } }
+  const foreign = { getScreenCTM: () => options.matrix || { a: 0, b: .75, c: -.75, d: 0 } }
+  parent.parentElement = foreign
+  const slot = {
+    offsetWidth: options.width || 220, offsetHeight: options.height || 48,
+    style: { fontSize: '18px', lineHeight: '28.8px', fontFamily: 'Georgia', fontWeight: '500', textAlign: 'center' },
+    parentElement: parent,
+    closest(selector) { return selector === 'foreignObject' ? foreign : null },
+    getBoundingClientRect: () => options.rect || { left: 100, top: 180, width: 21.6, height: 99 }
+  }
+  r.node('world').querySelector = selector => selector.includes('[data-prose-slot]') ? slot : null
+  r.node('surface').parentElement = { getBoundingClientRect: () => ({ left: 25, top: 10 }) }
+  return slot
+}
+
+test('文字编辑层锚定真实文字槽并合成标签缩放与旋转，不再按图框重排全部公式', () => {
+  const board = fixture(); board.elements[0].rotation = 90
+  const r = runtime(board), source = attachTextSlot(r)
+  r.api.canvas.openPaperEditor('input')
+  const panel = r.node('inline-writing'), rect = source.getBoundingClientRect()
+  assert.equal(parseFloat(panel.style.width), source.offsetWidth)
+  assert.equal(parseFloat(panel.style.height), source.offsetHeight)
+  assert.ok(Math.abs(parseFloat(panel.style.left) + 25 + source.offsetWidth / 2 - (rect.left + rect.width / 2)) < .001)
+  assert.ok(Math.abs(parseFloat(panel.style.top) + 10 + source.offsetHeight / 2 - (rect.top + rect.height / 2)) < .001)
+  assert.equal(panel.style.transformOrigin, '50% 50%')
+  const matrix = panel.style.transform.match(/^matrix\((.*)\)$/)[1].split(',').map(Number)
+  assert.ok(Math.abs(matrix[1] - .45) < .0001)
+  assert.ok(Math.abs(matrix[2] + .45) < .0001)
+  assert.equal(panel.style.fontSize, '18px')
+  assert.equal(panel.style.lineHeight, '28.8px')
+  assert.equal(panel.style.fontFamily, 'Georgia')
+  assert.equal(r.node('paper-prose').style.lineHeight, 'inherit')
+  assert.equal(r.node('paper-equations').innerHTML, '')
+})
+
+test('文字输入伸长仅在原文字槽滚动，宽高位置及公式字段不被重排或写坏', () => {
+  const r = runtime(fixture()), original = snapshot(r.api.board)
+  attachTextSlot(r)
+  r.api.canvas.openPaperEditor('input')
+  const panel = r.node('inline-writing'), placement = plain(panel.style)
+  const prose = r.node('paper-prose'); prose.innerText = Array(80).fill('这段说明仍在原位置编辑，完整内容可以滚动校对。').join('\n')
+  r.fire('paper-prose', 'input')
+  assert.equal(r.api.canvas.draft.value.text, prose.innerText)
+  for (const field of ['left', 'top', 'width', 'height', 'transform', 'fontSize']) assert.equal(panel.style[field], placement[field], field)
+  assert.equal(panel.style.overflow, 'hidden')
+  assert.equal(prose.style.overflow, 'auto')
+  assert.equal(prose.style.height, '100%')
+  assert.equal(prose.style.minHeight, '0')
+  assert.deepEqual(plain(r.api.canvas.draft.value.mathExpressions), fixture().elements[0].mathExpressions)
+  assert.equal(snapshot(r.api.board), original)
+  r.api.paper.undo(); assert.equal(r.api.canvas.draft.value.text, fixture().elements[0].text)
+  r.api.paper.redo(); assert.equal(r.api.canvas.draft.value.text, prose.innerText)
+})
+
+test('连线文字使用其真实字体和文字槽，不误取图元字号或加入最小字号放大', () => {
+  const board = fixture(); board.elements[0].type = 'line'; board.elements[0].fontSize = 40
+  const r = runtime(board)
+  const source = attachTextSlot(r, { fit: 'matrix(0.5,0,0,0.5,0,0)', matrix: { a: .6, b: 0, c: 0, d: .6 }, rect: { left: 180, top: 210, width: 66, height: 14.4 } })
+  source.style.fontSize = '12px'; source.style.lineHeight = '19.2px'
+  r.api.canvas.openPaperEditor('input')
+  assert.equal(r.node('inline-writing').style.fontSize, '12px')
+  assert.equal(r.node('inline-writing').style.lineHeight, '19.2px')
+  assert.equal(r.node('inline-writing').style.transform, 'matrix(0.3,0,0,0.3,0,0)')
+  assert.equal(r.node('inline-writing').style.height, '48px')
 })

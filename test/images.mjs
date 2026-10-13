@@ -24,8 +24,8 @@ const board = () => ({version:1,elements:[imageElement()]})
 
 // Add a valid ancillary PNG chunk to exercise byte limits without requiring
 // native image codecs in the plugin's test environment.
-function largePng(bytes) {
-  const original=Buffer.from(png,'base64'),payload=Buffer.alloc(bytes-original.length-12,65),chunk=Buffer.alloc(payload.length+12)
+function largePng(bytes,fill=65) {
+  const original=Buffer.from(png,'base64'),payload=Buffer.alloc(bytes-original.length-12,fill),chunk=Buffer.alloc(payload.length+12)
   chunk.writeUInt32BE(payload.length);chunk.write('tEXt',4);payload.copy(chunk,8)
   let crc=0xffffffff
   for(const value of chunk.subarray(4,chunk.length-4)){crc^=value;for(let n=0;n<8;n++)crc=(crc>>>1)^((crc&1)?0xedb88320:0)}
@@ -55,12 +55,25 @@ test('图片尺寸、自然说明和类型有严格校验，代码不能进入�
   assert.throws(()=>parseImageSource(source('png',oversized.toString('base64'))),/尺寸/)
 })
 
-test('单图6MiB、全板8MiB同时限制，完整候选板中的重复图片也计入',()=>{
+test('单图6MiB、全板8MiB同时限制，相同来源去重但不同图片完整计入',()=>{
   assert.throws(()=>parseImageSource(largePng(MAX_IMAGE_BYTES+1)),/6 MiB/)
   const src=largePng(MAX_BOARD_IMAGE_BYTES/2+1),b=board();b.elements[0].image.src=src
   assert.deepEqual(boardDiagnostics(b),[])
   const duplicate=structuredClone(b.elements[0]);duplicate.id='duplicate';b.elements.push(duplicate)
+  assert.deepEqual(boardDiagnostics(b),[])
+  duplicate.image.src=largePng(MAX_BOARD_IMAGE_BYTES/2+1,66)
   assert.ok(boardDiagnostics(b).some(e=>e.code==='board/image-limit'))
+})
+
+test('公式图形当前 PNG 与原图共用8MiB预算，重复原图去重且不预留图注',()=>{
+  const src=largePng(MAX_BOARD_IMAGE_BYTES/2+1),b=board(),e=b.elements[0];e.text='';e.math='';e.image.src=src;e.image.alt='数学图形'
+  e.formulaGraphic={version:1,originalMath:'y = x',originalImage:{src,width:3,height:2},currentMath:'y = x',semanticStatus:'source-aligned',renderer:{name:'MathJax SVG',version:'3.2.2'},edits:[]}
+  assert.deepEqual(boardDiagnostics(b),[]);assert.equal(imageCaptionHeight(e),0)
+  e.formulaGraphic.originalImage.src=largePng(MAX_BOARD_IMAGE_BYTES/2+1,66);e.formulaGraphic.currentMath=null;e.formulaGraphic.semanticStatus='needs-review';e.formulaGraphic.edits=[{kind:'erase',points:[[0,0]],radius:1}]
+  assert.ok(boardDiagnostics(b).some(error=>error.code==='board/image-limit'))
+  e.formulaGraphic.originalImage.src=largePng(MAX_IMAGE_BYTES+1);assert.ok(boardDiagnostics(b).some(error=>error.code==='board/formula-image-source'))
+  e.formulaGraphic.originalImage.src=source('jpeg',jpeg);e.formulaGraphic.originalImage.width=3;e.formulaGraphic.originalImage.height=2
+  assert.ok(boardDiagnostics(b).some(error=>error.code==='board/formula-image-format'))
 })
 
 test('布局图像保留比例图幅并为自然图注和公式留空间，碰撞避让幂等',()=>{

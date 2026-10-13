@@ -15,8 +15,21 @@ const picture=(id='picture',format='png',data=png)=>({id,type:'image',x:0,y:0,wi
   image:{src:'data:image/'+format+';base64,'+data,alt:'输入处理的工程图片',width:3,height:2,extension:{preserve:true}},
   text:'核对输入范围。',implementation:{code:'return input;'},extension:{preserve:true}})
 const imageBlocks=result=>result.content.filter(block=>block.type==='image')
-function paddedPng(){
-  const original=Buffer.from(png,'base64'),payload=Buffer.alloc(3*1024*1024,65),chunk=Buffer.alloc(payload.length+12)
+test('数学图形只发送当前PNG视觉，原始图片以指纹摘要保留完整机读来源',()=>{
+  const element=picture();element.formulaGraphic={originalImage:{src:'data:image/webp;base64,'+webp,width:3,height:2},originalMath:'y=ax',currentMath:null,semanticStatus:'needs-review'}
+  const value={ok:true,board:{version:1,elements:[element]}},wrapped=mcpToolResult('anatomy_board',value)
+  assert.equal(imageBlocks(wrapped).length,1);assert.equal(imageBlocks(wrapped)[0].data,png)
+  assert.ok(!wrapped.content.filter(c=>c.type==='text').some(c=>c.text.includes(webp)||c.text.includes(png)))
+  assert.equal(wrapped.structuredContent.board.elements[0].formulaGraphic.originalImage.src,element.formulaGraphic.originalImage.src)
+  assert.equal(wrapped.structuredContent.board.elements[0].formulaGraphic.currentMath,null)
+})
+test('前一图元的原始PNG同时是后一图元的当前图，两个当前视觉都不能遗漏',()=>{
+  const a=picture('changed','webp',webp),b=picture('original');a.formulaGraphic={originalImage:{src:b.image.src,width:3,height:2}}
+  const result=mcpToolResult('anatomy_board',{ok:true,board:{elements:[a,b]}})
+  assert.equal(imageBlocks(result).length,2);assert.ok(imageBlocks(result).some(c=>c.data===png));assert.ok(imageBlocks(result).some(c=>c.data===webp))
+})
+function paddedPng(seed=65){
+  const original=Buffer.from(png,'base64'),payload=Buffer.alloc(3*1024*1024,seed),chunk=Buffer.alloc(payload.length+12)
   chunk.writeUInt32BE(payload.length);chunk.write('tEXt',4);payload.copy(chunk,8)
   let crc=0xffffffff
   for(const value of chunk.subarray(4,chunk.length-4)){crc^=value;for(let n=0;n<8;n++)crc=(crc>>>1)^((crc&1)?0xedb88320:0)}
@@ -46,7 +59,7 @@ test('无效来源和当前板超过图片预算都不附视觉，不扫描历�
   assert.equal(imageBlocks(bad).length,0)
   assert.ok(!bad.content[0].text.includes(invalid.image.src))
   assert.equal(bad.structuredContent.board.elements[0].image.src,invalid.image.src)
-  const large=paddedPng(),tooMany=Array.from({length:3},(_,index)=>picture('image-'+index,'png',large))
+  const large=paddedPng(),tooMany=Array.from({length:3},(_,index)=>picture('image-'+index,'png',paddedPng(65+index)))
   const excess=mcpToolResult('anatomy_board',{ok:true,board:{version:1,elements:tooMany}})
   assert.equal(imageBlocks(excess).length,0)
   assert.ok(excess.content.some(block=>block.type==='text'&&block.text.includes('超过 8 MiB')))

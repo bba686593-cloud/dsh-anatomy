@@ -1,23 +1,43 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import vm from 'node:vm'
+import { deflateSync } from 'node:zlib'
 import { renderAnatomy } from '../lib/render.js'
 import { boardDiagnostics } from '../lib/board.js'
+import { localToWorld } from '../lib/drawing.js'
 const plain=v=>JSON.parse(JSON.stringify(v));
 const mapping={implementation:{language:'JavaScript',code:'process(input)',note:'处理输入',extra:7},anchors:[{file:'lib/board.js',sha256:'a'.repeat(64),role:'implementation'}],targets:[],custom:{keep:true}};
 const rect={id:'box',type:'rect',x:100,y:100,width:300,height:180,text:'处理输入',math:'y=ax',mathExpressions:[{id:'extra',value:'x>0',metadata:{keep:true}}],fill:'#eff6ff',stroke:'#6366f1',...mapping};
 const pen={id:'ink',type:'pen',x:100,y:350,width:300,height:1,points:[[0,0],[1,0]],text:'',math:'',stroke:'#18233b',strokeWidth:3,fill:'none',...mapping};
-function runtime(elements=[rect,pen]){
+function fixturePNG(width=3,height=2,color=0){
+ const crc=buffer=>{let c=0xffffffff;for(const byte of buffer){c^=byte;for(let i=0;i<8;i++)c=c&1?0xedb88320^(c>>>1):c>>>1}return(c^0xffffffff)>>>0};
+ const chunk=(name,data)=>{const tag=Buffer.from(name),b=Buffer.alloc(data.length+12);b.writeUInt32BE(data.length);tag.copy(b,4);data.copy(b,8);b.writeUInt32BE(crc(Buffer.concat([tag,data])),b.length-4);return b};
+ const header=Buffer.alloc(13);header.writeUInt32BE(width);header.writeUInt32BE(height,4);header[8]=8;header[9]=6;
+ const rows=Buffer.alloc((width*4+1)*height);for(let y=0;y<height;y++)for(let x=0;x<width;x++){const p=y*(width*4+1)+1+x*4;rows[p]=color;rows[p+3]=255}
+ return 'data:image/png;base64,'+Buffer.concat([Buffer.from([137,80,78,71,13,10,26,10]),chunk('IHDR',header),chunk('IDAT',deflateSync(rows)),chunk('IEND',Buffer.alloc(0))]).toString('base64')
+}
+const fixtureRaster={src:fixturePNG(),width:3,height:2,displayWidth:60,displayHeight:40};
+function fixtureCapture(session){const xs=session.region.map(p=>p.x),ys=session.region.map(p=>p.y),x=Math.min(...xs),y=Math.min(...ys);return {src:fixturePNG(),bounds:{x,y,width:Math.max(1,Math.max(...xs)-x),height:Math.max(1,Math.max(...ys)-y)}}}
+function deferred(){let resolve;const promise=new Promise(r=>resolve=r);return {promise,resolve}}
+function runtime(elements=[rect,pen],options={}){
  const nodes=new Map(),storage=new Map(),listeners={};
  const node=id=>{if(nodes.has(id))return nodes.get(id);const n={id,value:'',innerHTML:'',textContent:'',style:{},dataset:{},hidden:id==='inline-writing',open:false,listeners:{},attributes:{},classList:{add(){},remove(){},toggle(){}},setAttribute(k,v){this.attributes[k]=v},getAttribute(k){return this.attributes[k]},hasAttribute(k){return this.attributes[k]!==undefined},addEventListener(k,f){(this.listeners[k]??=[]).push(f)},querySelectorAll(){return []},querySelector(){return null},getBoundingClientRect(){return {left:0,top:0,width:1000,height:700}},focus(){},setPointerCapture(){},showModal(){this.open=true},close(){this.open=false},contains(){return false},click(){}};nodes.set(id,n);return n};
  const document={compatMode:'CSS1Compat',getElementById:node,querySelectorAll:()=>[],querySelector:()=>null,body:node('body'),addEventListener(k,f){(listeners[k]??=[]).push(f)}};
- const context={document,window:{addEventListener(){}},structuredClone,AbortController,Blob,URL,console,setTimeout:()=>0,clearTimeout(){},localStorage:{getItem:k=>storage.get(k),setItem:(k,v)=>storage.set(k,v),removeItem:k=>storage.delete(k)},fetch:async()=>({ok:true,json:async()=>({service:'anatomy-handwriting',ready:true})})};
+ const imageRequests=[],canvasLog=[];
+ class FixtureImage{set src(value){this._src=value;this._paint=0;imageRequests.push(this)}get src(){return this._src}}
+ document.createElement=()=>{const canvas={width:3,height:2,_paint:0,toDataURL(){return fixturePNG(this.width,this.height,this._paint)},getContext(){return ctx}};let matrix=[1,0,0,1,0,0],path=[];const stack=[],record=kind=>canvasLog.push({kind,matrix:[...matrix],path:plain(path),lineWidth:ctx.lineWidth,width:canvas.width,height:canvas.height}),multiply=([a,b,c,d,e,f])=>{const [u,v,w,z,x,y]=matrix;matrix=[u*a+w*b,v*a+z*b,u*c+w*d,v*c+z*d,u*e+w*f+x,v*e+z*f+y]};const ctx={drawImage(image){canvas._paint=image._paint||0},save(){stack.push([...matrix])},restore(){matrix=stack.pop()||matrix},scale(x,y){multiply([x,0,0,y,0,0])},translate(x,y){multiply([1,0,0,1,x,y])},rotate(angle){const c=Math.cos(angle),s=Math.sin(angle);multiply([c,s,-s,c,0,0])},beginPath(){path=[]},closePath(){path.push({kind:'close'})},clip(){},moveTo(x,y){path.push({kind:'move',x,y})},lineTo(x,y){path.push({kind:'line',x,y})},arc(x,y,radius){path.push({kind:'arc',x,y,radius})},stroke(){record('stroke');canvas._paint++},fill(){record('fill');canvas._paint++},fillRect(){},getImageData(){return {data:Uint8ClampedArray.of(0,0,0,255)}}};return canvas};
+ const context={document,window:{addEventListener(){}},structuredClone,AbortController,Blob,URL,console,Image:FixtureImage,setTimeout:()=>0,clearTimeout(){},localStorage:{getItem:k=>storage.get(k),setItem:(k,v)=>storage.set(k,v),removeItem:k=>storage.delete(k)},fetch:options.fetch|| (async()=>({ok:true,json:async()=>({service:'anatomy-handwriting',ready:true})}))};
  const html=renderAnatomy({slug:'drawing-test',title:'自由绘图验证',board:{version:1,elements:structuredClone(elements),layout:{mode:'manual'}}},[],[]);vm.runInNewContext(html.match(/<script>([\s\S]*)<\/script>/)[1],context);
- const api=context.window.__anatomyBoard,fire=(id,k,e={})=>(node(id).listeners[k]||[]).forEach(f=>f(e));
+ context.fixtureRasterFactory=options.raster|| (async()=>plain(fixtureRaster));vm.runInNewContext('rasterFormula=async(...args)=>fixtureRasterFactory(...args)',context);
+ context.fixtureCaptureFactory=options.capture|| (async session=>fixtureCapture(session));vm.runInNewContext('captureLassoRaster=async(...args)=>fixtureCaptureFactory(...args)',context);
+ // Browser startup is not part of these rendering-boundary tests. Enable
+ // graphics event paths only after evaluating the bundled browser script.
+ if(options.graphics)document.head={};
+ const api=context.window.__anatomyBoard,fire=(id,k,e={})=>Promise.all((node(id).listeners[k]||[]).map(f=>f(e)));
  const target=(id,part)=>({closest(selector){if(selector==='[data-id]')return {getAttribute:()=>id};if(selector==='[data-expression]'&&part&&part!=='text')return {getAttribute:()=>part};if(selector==='.shape-prose'&&part==='text')return {};return null}});
- const pointer=(kind,x,y,t={closest(){return null}},extra={})=>{const v=api.view;fire('surface',kind,{button:0,pointerId:1,clientX:x*v.scale+v.x,clientY:y*v.scale+v.y,target:t,preventDefault(){},...extra})};
+ const pointer=(kind,x,y,t={closest(){return null}},extra={})=>{const v=api.view;return fire('surface',kind,{button:0,pointerId:1,clientX:x*v.scale+v.x,clientY:y*v.scale+v.y,target:t,preventDefault(){},...extra})};
  const handle=(kind,id,value)=>({closest(sel){if(sel==='[data-resize],[data-rotate],[data-vertex],[data-endpoint]')return {hasAttribute:k=>k==='data-'+kind,getAttribute:k=>k==='data-'+kind?value:k==='data-control-id'?id:k==='data-resize'&&kind==='resize'?id:null};return null}});
- return {api,node,fire,pointer,target,handle,storage};
+ return {api,node,fire,pointer,target,handle,storage,document,context,imageRequests,canvasLog,evaluate:code=>vm.runInNewContext(code,context),releaseImages(){for(const image of imageRequests)if(!image.released){image.released=true;image.onload?.()}}};
 }
 test('画笔连续输入直接保留原笔迹，无识别候选，拖动一次是一条撤销记录',()=>{
  const r=runtime([]);r.api.setTool('pen');r.pointer('pointerdown',10,20);r.pointer('pointermove',80,60);r.pointer('pointerup',80,60);
@@ -52,17 +72,26 @@ test('画板旋转、多边形顶点和连线端点都有真实指针路径',()=
 test('形状转换和拆分保留稳定来源、附加公式扩展与全局撤销',()=>{
  const r=runtime([rect]);r.api.select('box');r.api.drawing.convert('polygon');assert.equal(r.api.board.elements[0].points.length,4);assert.deepEqual(plain(r.api.board.elements[0].implementation),mapping.implementation);r.api.drawing.split();const math=r.api.board.elements.find(e=>e.expressionOrigin==='extra');assert.deepEqual(plain(math.metadata),{keep:true});assert.equal(math.derivedFrom,'box');r.api.undo();assert.equal(r.api.board.elements.length,1);assert.equal(r.api.board.elements[0].type,'polygon');r.api.undo();assert.equal(r.api.board.elements[0].type,'rect');
 });
-function recognize(r){r.api.select('ink');r.api.math.openHandwriting({mode:'math'});r.node('ink-result').value='y=ax';r.node('ink-destination').value='replace-ink';r.api.math.applyInkResult()}
-test('笔迹显式校对后在原处排版，原稿和全部映射保留，切换重载及撤销不丢笔迹',()=>{
- const r=runtime([pen]);recognize(r);const e=r.api.board.elements[0];assert.equal(e.id,'ink');assert.equal(e.type,'math');assert.equal(e.mathDisplay,'typeset');assert.deepEqual(plain(e.recognition.rawElements),[pen]);assert.deepEqual(plain(e.anchors),mapping.anchors);
- r.api.drawing.toggleInk();assert.equal(r.api.board.elements[0].mathDisplay,'ink');assert.match(r.node('world').innerHTML,/original-ink/);assert.equal(boardDiagnostics(plain(r.api.board)).length,0);
- const restored=runtime(plain(r.api.board.elements));assert.match(restored.node('world').innerHTML,/original-ink/);restored.api.select('ink');restored.api.drawing.toggleInk();assert.equal(restored.api.board.elements[0].mathDisplay,'typeset');r.api.undo();r.api.undo();assert.deepEqual(plain(r.api.board.elements[0]),pen);
+const fullInkRegion=[{x:90,y:330},{x:410,y:330},{x:410,y:370},{x:90,y:370}];
+async function openLasso(r,region=fullInkRegion,mode='math'){
+ r.api.graphics.lasso(region);await r.fire(mode==='math'?'recognize-lasso-math':'recognize-lasso-text','click');
+ assert.equal(r.node('ink-dialog').open,true);
+}
+async function recognize(r){await openLasso(r);r.node('ink-result').value='y=ax';await r.fire('ink-result','input');return await r.api.math.applyInkResult()}
+test('圈选笔迹显式校对后在原处生成PNG，原稿与全部映射重载和撤销均保留',async()=>{
+ const r=runtime([pen]),before=plain(r.api.board);await recognize(r);const e=r.api.board.elements[0];
+ assert.equal(e.id,'ink');assert.equal(e.type,'image');assert.equal(e.math,'');assert.equal(e.mathExpressions,undefined);assert.match(e.image.src,/^data:image\/png;base64,/);assert.equal(e.formulaGraphic.currentMath,'y=ax');assert.equal(e.formulaGraphic.semanticStatus,'source-aligned');assert.deepEqual(plain(e.recognition.rawElements),[pen]);assert.deepEqual(plain(e.anchors),mapping.anchors);assert.deepEqual(plain(e.implementation),mapping.implementation);assert.deepEqual(plain(e.custom),mapping.custom);
+ assert.equal(r.node('ink-result').hidden,true);assert.equal(r.node('ink-result').readOnly,true);assert.equal(boardDiagnostics(plain(r.api.board)).length,0);
+ const confirmed=plain(r.api.board),restored=runtime(confirmed.elements);assert.deepEqual(plain(restored.api.board),confirmed);
+ r.api.undo();assert.deepEqual(plain(r.api.board),before);r.api.redo();assert.deepEqual(plain(r.api.board),confirmed);
 });
-test('识别后原笔迹被移动或擦改，旧结果拒绝覆盖当前原稿',()=>{
- const r=runtime([pen]);r.api.select('ink');r.api.math.openHandwriting({mode:'math'});r.api.board.elements[0].x+=20;r.node('ink-result').value='y=ax';r.node('ink-destination').value='replace-ink';r.api.math.applyInkResult();assert.equal(r.api.board.elements[0].type,'pen');assert.match(r.node('ink-feedback').textContent,/原笔迹已变化/);
+test('识别面板打开后原笔迹移动或擦改，旧结果不能覆盖当前原稿',async()=>{
+ const r=runtime([pen]);await openLasso(r);r.api.change(()=>{r.api.board.elements[0].x+=20});const changed=plain(r.api.board);r.node('ink-result').value='y=ax';await r.api.math.applyInkResult();
+ assert.deepEqual(plain(r.api.board),changed);assert.equal(r.api.board.elements[0].type,'pen');assert.match(r.node('ink-feedback').textContent,/笔迹.*变化/);
 });
-test('原笔迹模式中编辑公式改为打印，旧笔迹仅保留为原稿，不掩盖新意图',()=>{
- const r=runtime([pen]);recognize(r);r.api.drawing.toggleInk();r.api.canvas.openPaperEditor('ink','primary');r.api.paper.equation('primary','y=ax+b');assert.equal(r.api.canvas.confirm(),true);assert.equal(r.api.board.elements[0].mathDisplay,'typeset');assert.equal(r.api.board.elements[0].math,'y=ax+b');assert.ok(r.api.board.elements[0].mathHandwriting.strokes.length);r.api.drawing.toggleInk();assert.equal(r.api.board.elements[0].mathDisplay,'typeset');assert.match(r.node('toast').textContent,/旧表达/);
+test('已识别公式点击只选择PNG图形，文字编辑层不出现LaTex或覆盖旧原稿',async()=>{
+ const r=runtime([pen]);await recognize(r);const before=plain(r.api.board);
+ assert.equal(r.api.canvas.openPaperEditor('ink','primary'),false);assert.equal(r.api.canvas.draft,null);assert.equal(r.node('inline-writing').hidden,true);assert.equal(r.node('paper-equations').innerHTML,'');assert.deepEqual(plain(r.api.board),before);assert.match(r.node('toast').textContent,/图形/);
 });
 test('选择整图元橡皮时删除端点会解除连线绑定，并撤销恢复完整数据',()=>{
  const line={id:'link',type:'arrow',x:100,y:100,width:400,height:0,from:'box',text:'传递结果'},r=runtime([rect,line]);r.node('eraser-mode').value='object';r.api.setTool('eraser');r.pointer('pointerdown',250,190,r.target('box'));r.pointer('pointerup',250,190);assert.equal(r.api.board.elements.length,1);assert.equal(r.api.board.elements[0].from,undefined);r.api.undo();assert.equal(r.api.board.elements[1].from,'box');
@@ -86,4 +115,169 @@ test('复合公式首次擦除沿旧SVG真实坐标命中，拆分尚未重绘�
  const h={mode:'math',reviewedValue:'y=ax',strokes:[[[10,10],[110,10]]]},r=runtime([{...rect,math:'y=ax',mathDisplay:'ink',mathHandwriting:h}]),v=r.api.view;
  const n={getBoundingClientRect:()=>({left:v.x+150*v.scale,top:v.y+160*v.scale,right:v.x+350*v.scale,bottom:v.y+210*v.scale}),getAttribute:()=> 'primary',querySelector:()=>({getScreenCTM:()=>({a:v.scale,b:0,c:0,d:v.scale,e:v.x+140*v.scale,f:v.y+170*v.scale})})};
  r.node('world').querySelectorAll=selector=>selector.includes('data-id="box"')?[n]:[];r.api.setTool('eraser');r.pointer('pointerdown',190,180,r.target('box','primary'));r.pointer('pointerup',190,180);assert.ok(r.api.board.elements.filter(e=>e.type==='pen').length>=2);assert.ok(r.api.board.elements.some(e=>e.id==='box'&&e.type==='rect'));assert.ok(r.api.board.elements.some(e=>e.math==='x>0'));assert.equal(boardDiagnostics(plain(r.api.board)).length,0);
+});
+
+const middleInkRegion=[{x:200,y:330},{x:300,y:330},{x:300,y:370},{x:200,y:370}];
+const response=data=>({ok:true,json:async()=>data});
+const graphicFixture=()=>({id:'formula',type:'image',x:100,y:100,width:60,height:40,text:'',math:'',fill:'none',stroke:'#18233b',...plain(mapping),image:{src:fixtureRaster.src,width:3,height:2,alt:'数学图形'},formulaGraphic:{version:1,originalMath:'y=ax',currentMath:'y=ax',semanticStatus:'source-aligned',originalImage:{src:fixtureRaster.src,width:3,height:2},renderer:{name:'MathJax SVG',version:'3.2.2'},edits:[]}});
+
+test('套索只识别穿过圈内的笔迹段，圈外两段、映射、原稿与连线绑定保持',async()=>{
+ const link={id:'link',type:'arrow',x:100,y:350,width:100,height:100,from:'ink',text:'关联原笔迹'},r=runtime([pen,link]),before=plain(r.api.board);
+ r.api.setTool('lasso');await r.pointer('pointerdown',200,330);await r.pointer('pointermove',300,330);await r.pointer('pointermove',300,370);await r.pointer('pointermove',200,370);await r.pointer('pointerup',200,370);
+ assert.equal(r.api.graphics.slices.length,1);const slices=plain(r.api.graphics.slices[0]);assert.equal(slices.inside.length,1);assert.equal(slices.outside.length,2);assert.equal(r.node('world').innerHTML.includes('lasso-region'),true);
+ await r.fire('recognize-lasso-math','click');r.node('ink-result').value='y=ax';await r.fire('ink-result','input');const candidate=await r.api.math.applyInkResult();
+ assert.equal(candidate.type,'image');assert.equal(candidate.x,200);assert.equal(candidate.y,330);assert.notEqual(candidate.id,'ink');assert.deepEqual(plain(candidate.recognition.rawElements),[pen]);assert.deepEqual(plain(candidate.recognition.region),middleInkRegion);
+ const outside=r.api.board.elements.filter(e=>e.type==='pen');assert.deepEqual(plain(outside),slices.outside);for(const e of outside){assert.deepEqual(plain(e.anchors),mapping.anchors);assert.deepEqual(plain(e.implementation),mapping.implementation);assert.deepEqual(plain(e.custom),mapping.custom)}
+ assert.equal(r.api.board.elements.find(e=>e.id==='link').from,'ink');assert.equal(boardDiagnostics(plain(r.api.board)).length,0);const confirmed=plain(r.api.board);r.api.undo();assert.deepEqual(plain(r.api.board),before);r.api.redo();assert.deepEqual(plain(r.api.board),confirmed);
+});
+
+test('圈选中文只替换圈内笔迹为文字，原处圈外笔迹不动且撤销完整恢复',async()=>{
+ const r=runtime([pen]),before=plain(r.api.board);await openLasso(r,middleInkRegion,'text');const outside=plain(r.api.graphics.slices[0].outside);r.node('ink-result').value='输入检查';await r.fire('ink-result','input');const candidate=await r.api.math.applyInkResult();
+ assert.equal(candidate.type,'text');assert.equal(candidate.text,'输入检查');assert.equal(candidate.x,200);assert.equal(candidate.y,330);assert.deepEqual(plain(r.api.board.elements.filter(e=>e.type==='pen')),outside);assert.deepEqual(plain(candidate.recognition.rawElements),[pen]);r.api.undo();assert.deepEqual(plain(r.api.board),before);
+});
+
+test('多条圈内笔迹识别合并源码锚点，所有原映射与未知字段都留在原稿记录',async()=>{
+ const second={...plain(pen),id:'second',y:360,anchors:[...mapping.anchors,{file:'lib/render.js',sha256:'b'.repeat(64),role:'implementation'}],implementation:{language:'JavaScript',code:'secondStep()',note:'另一步'},custom:{second:true}},r=runtime([pen,second]);
+ await recognize(r);const e=r.api.board.elements[0];assert.equal(e.type,'image');assert.deepEqual(plain(e.anchors),second.anchors);assert.deepEqual(plain(e.recognition.rawElements),[pen,second]);assert.equal(e.recognition.mappings.length,2);assert.deepEqual(plain(e.recognition.mappings[1].implementation),second.implementation);assert.deepEqual(plain(e.recognition.mappings[1].custom),second.custom);
+});
+
+test('关闭识别面板使正在等待PNG的确认失效，不在关闭后替换笔迹或新增撤销记录',async()=>{
+ const work=deferred(),r=runtime([pen],{raster:()=>work.promise}),initial=plain(r.api.board);r.api.change(()=>{r.api.board.elements[0].custom.prior='此前已确认的修改'});const before=plain(r.api.board);await openLasso(r);r.node('ink-result').value='y=ax';const pending=r.api.math.applyInkResult();await Promise.resolve();await r.fire('ink-close','click');work.resolve(plain(fixtureRaster));
+ assert.equal(await pending,false);assert.equal(r.node('ink-dialog').open,false);assert.deepEqual(plain(r.api.board),before);assert.ok([...r.storage.keys()].some(k=>k.endsWith(':handwriting')));r.api.undo();assert.deepEqual(plain(r.api.board),initial);
+});
+
+test('PNG准备期间移动原笔迹或切换选定版本，旧识别结果保留但拒绝应用',async()=>{
+ for(const change of ['ink','version']){
+  const work=deferred();let revision='selected-1';const r=runtime([pen],{raster:()=>work.promise,fetch:async path=>path.startsWith('/api/versions')?response({ok:true,selected:{id:'saved',revision},versions:[]}):response({service:'anatomy-handwriting',ready:true})});await r.api.versions.refresh();await openLasso(r);r.node('ink-result').value='y=ax';const pending=r.api.math.applyInkResult();await Promise.resolve();
+  if(change==='ink')r.api.change(()=>{r.api.board.elements[0].x+=10});else{revision='selected-2';await r.api.versions.refresh()}
+  const current=plain(r.api.board);work.resolve(plain(fixtureRaster));assert.equal(await pending,false);assert.deepEqual(plain(r.api.board),current);assert.equal(r.node('ink-dialog').open,true);assert.equal(r.node('ink-result').value,'y=ax');assert.match(r.node('ink-feedback').textContent,/变化|取消/);
+ }
+});
+
+test('同一公式数据但另一历史的对象引用已替换，旧图形转换不能splice最后一个部位',async()=>{
+ const printed={...plain(rect),id:'printed',type:'math',text:'',mathExpressions:[]},other={id:'other',type:'text',x:500,y:100,width:180,height:60,text:'另一部位'},work=deferred(),r=runtime([printed,other],{raster:()=>work.promise});
+ const pending=r.api.graphics.prepare('printed','primary');r.api.change(()=>{r.api.board.elements=plain(r.api.board.elements);r.api.board.elements[1].text='另一历史版本的说明'});const current=plain(r.api.board);work.resolve(plain(fixtureRaster));await assert.rejects(pending,/原公式|版本.*变化/);assert.deepEqual(plain(r.api.board),current);assert.equal(r.api.board.elements[1].id,'other');assert.equal(new Set(r.api.board.elements.map(e=>e.id)).size,2);
+});
+
+test('图形转换等待时撤销排在转换事务之后，重做恢复PNG及原公式来源',async()=>{
+ const printed={...plain(rect),id:'printed',type:'math',text:'',mathExpressions:[]},work=deferred(),r=runtime([printed],{graphics:true,raster:()=>work.promise}),before=plain(r.api.board),v=r.api.view;
+ await r.fire('surface','dblclick',{clientX:200*v.scale+v.x,clientY:150*v.scale+v.y,target:r.target('printed','primary')});await Promise.resolve();r.api.undo();assert.deepEqual(plain(r.api.board),before);work.resolve(plain(fixtureRaster));await r.api.graphics.flush();await Promise.resolve();assert.deepEqual(plain(r.api.board),before);r.api.redo();const e=r.api.board.elements[0];assert.equal(e.type,'image');assert.equal(e.formulaGraphic.originalMath,'y=ax');assert.deepEqual(plain(e.formulaGraphic.sourceElement),printed);
+});
+
+test('异步橡皮的最终历史纳入队列，等待期间Undo随后可完整Redo',async()=>{
+ const r=runtime([graphicFixture()],{graphics:true}),before=plain(r.api.board);r.api.setTool('eraser');await r.pointer('pointerdown',130,120,r.target('formula'));const ending=r.pointer('pointerup',130,120,r.target('formula'));await Promise.resolve();assert.equal(r.imageRequests.length,1);r.api.undo();r.releaseImages();await ending;await r.api.graphics.flush();await Promise.resolve();assert.deepEqual(plain(r.api.board),before);r.api.redo();const e=r.api.board.elements[0];assert.notEqual(e.image.src,before.elements[0].image.src);assert.equal(e.formulaGraphic.semanticStatus,'needs-review');assert.equal(e.formulaGraphic.currentMath,null);assert.equal(e.formulaGraphic.edits[0].kind,'erase');
+});
+
+test('取消正在等待解码的橡皮拖动恢复原图与原语义，不留下幽灵历史',async()=>{
+ const r=runtime([graphicFixture()],{graphics:true}),initial=plain(r.api.board);r.api.change(()=>{r.api.board.elements[0].custom.prior='保留前一步'});const before=plain(r.api.board);r.api.setTool('eraser');await r.pointer('pointerdown',130,120,r.target('formula'));const canceled=r.pointer('pointercancel',130,120,r.target('formula'));await Promise.resolve();r.releaseImages();await canceled;await r.api.graphics.flush();assert.deepEqual(plain(r.api.board),before);r.api.undo();assert.deepEqual(plain(r.api.board),initial);
+});
+
+test('保存等待异步橡皮和最终history完成，写出的PNG与画板一致且可撤销',async()=>{
+ let posted=null;const r=runtime([graphicFixture()],{graphics:true,fetch:async(path,options={})=>{if(path==='/api/versions'&&options.method==='POST')posted=JSON.parse(options.body);return path.startsWith('/api/versions')?response({ok:true,selected:{id:'saved',revision:'saved-revision'},versions:[]}):response({service:'anatomy-handwriting',ready:true})}}),before=plain(r.api.board);await r.api.versions.refresh();r.api.setTool('eraser');await r.pointer('pointerdown',130,120,r.target('formula'));const ending=r.pointer('pointerup',130,120,r.target('formula')),saving=r.api.versions.save();await Promise.resolve();assert.equal(posted,null);r.releaseImages();await ending;assert.equal(await saving,true);assert.deepEqual(plain(posted.board),plain(r.api.board));assert.equal(posted.board.elements[0].formulaGraphic.semanticStatus,'needs-review');r.api.undo();assert.deepEqual(plain(r.api.board),before);
+});
+
+test('补画的解码与finalization组成一个图形队列事务，等待时撤销不会错撤上一步',async()=>{
+ const r=runtime([graphicFixture()],{graphics:true});r.api.change(()=>{r.api.board.elements[0].custom.prior='不会被本次撤销移除'});const before=plain(r.api.board);r.api.setTool('pen');await r.pointer('pointerdown',110,110);await r.pointer('pointermove',120,120);const ending=r.pointer('pointerup',120,120);await Promise.resolve();assert.equal(r.imageRequests.length,1);r.api.undo();r.releaseImages();await ending;await r.api.graphics.flush();await Promise.resolve();assert.deepEqual(plain(r.api.board),before);r.api.redo();assert.equal(r.api.board.elements.length,1);assert.equal(r.api.board.elements[0].formulaGraphic.semanticStatus,'needs-review');assert.equal(r.api.board.elements[0].formulaGraphic.edits[0].kind,'ink');assert.equal(r.api.board.elements[0].formulaGraphic.edits[0].rawElement.type,'pen');
+});
+
+test('圈选预览捕获未完成时关闭或保留原稿，晚到的预览不能重新打开或改动画板',async()=>{
+ for(const action of ['ink-close','ink-keep']){
+  const work=deferred(),r=runtime([pen],{capture:()=>work.promise}),initial=plain(r.api.board);r.api.change(()=>{r.api.board.elements[0].custom.prior='本次预览前的修改'});const before=plain(r.api.board);
+  r.api.graphics.lasso(fullInkRegion);const opening=r.fire('recognize-lasso-math','click'),session=r.api.math.lassoSession;assert.equal(session.capturing,true);assert.equal(r.node('ink-recognize').disabled,true);assert.equal(r.node('ink-result').disabled,true);assert.deepEqual(plain(r.api.board),before);
+  await r.fire(action,'click');work.resolve(fixtureCapture(session));assert.deepEqual(await opening,[false]);assert.equal(r.node('ink-dialog').open,false);assert.equal(r.api.math.lassoSession,null);assert.deepEqual(plain(r.api.board),before);r.api.undo();assert.deepEqual(plain(r.api.board),initial);
+ }
+});
+
+test('圈选预览捕获期间原稿或选定版本变化，陈旧图片不能成为可确认预览',async()=>{
+ for(const stale of ['ink','version']){
+  const work=deferred();let revision='selected-1';const r=runtime([pen],{capture:()=>work.promise,fetch:async path=>path.startsWith('/api/versions')?response({ok:true,selected:{id:'saved',revision},versions:[]}):response({service:'anatomy-handwriting',ready:true})});await r.api.versions.refresh();r.api.graphics.lasso(fullInkRegion);const opening=r.fire('recognize-lasso-math','click'),session=r.api.math.lassoSession;
+  if(stale==='ink')r.api.change(()=>{r.api.board.elements[0].x+=10});else{revision='selected-2';await r.api.versions.refresh()}const current=plain(r.api.board);work.resolve(fixtureCapture(session));assert.deepEqual(await opening,[false]);assert.equal(session.image,undefined);assert.equal(session.captureError,true);assert.equal(r.node('ink-recognize').disabled,true);assert.deepEqual(plain(r.api.board),current);assert.match(r.node('ink-feedback').textContent,/变化/);
+ }
+});
+
+const middleGraphicRegion=[{x:120,y:110},{x:145,y:110},{x:145,y:135},{x:120,y:135}];
+const settle=()=>new Promise(resolve=>setImmediate(resolve));
+
+test('圈选PNG公式保留圈外图形，识别结果在圈选位置生成且原图和映射可撤销恢复',async()=>{
+ const r=runtime([graphicFixture()]);r.api.change(()=>{r.api.board.layout.mode='auto'});const before=plain(r.api.board);await openLasso(r,middleGraphicRegion);assert.equal(r.api.math.lassoSession.slices[0].graphic,true);assert.match(r.node('ink-paths').innerHTML,/<image href="data:image\/png;base64,/);
+ r.node('ink-result').value='x^2';await r.fire('ink-result','input');const applying=r.api.math.applyInkResult();await settle();assert.equal(r.imageRequests.length,1);assert.deepEqual(plain(r.api.board),before);r.releaseImages();const candidate=await applying;
+ assert.equal(candidate.type,'image');assert.equal(candidate.x,120);assert.equal(candidate.y,110);assert.notEqual(candidate.id,'formula');assert.equal(candidate.formulaGraphic.currentMath,'x^2');assert.deepEqual(plain(candidate.recognition.rawElements),before.elements);assert.deepEqual(plain(candidate.anchors),mapping.anchors);const outside=r.api.board.elements.find(e=>e.id==='formula');assert.notEqual(outside.image.src,before.elements[0].image.src);assert.equal(outside.formulaGraphic.semanticStatus,'needs-review');assert.equal(outside.formulaGraphic.currentMath,null);assert.equal(outside.formulaGraphic.edits.at(-1).kind,'crop');assert.deepEqual(plain(outside.formulaGraphic.originalImage),before.elements[0].formulaGraphic.originalImage);assert.deepEqual(plain(outside.implementation),mapping.implementation);assert.equal(r.api.board.layout.mode,'manual');assert.equal(boardDiagnostics(plain(r.api.board)).length,0);
+ const confirmed=plain(r.api.board);r.api.undo();assert.deepEqual(plain(r.api.board),before);r.api.redo();assert.deepEqual(plain(r.api.board),confirmed);
+});
+
+test('裁剪圈外PNG等待解码时取消或改候选结果，真实图像和自动布局不提前改变',async()=>{
+ for(const stale of ['close','result']){
+  const r=runtime([graphicFixture()]),initial=plain(r.api.board);r.api.change(()=>{r.api.board.layout.mode='auto';r.api.board.elements[0].custom.prior='此前已确认的修改'});const before=plain(r.api.board);await openLasso(r,middleGraphicRegion);r.node('ink-result').value='x^2';await r.fire('ink-result','input');const applying=r.api.math.applyInkResult();await settle();assert.equal(r.imageRequests.length,1);assert.deepEqual(plain(r.api.board),before);
+  if(stale==='close')await r.fire('ink-close','click');else{r.node('ink-result').value='x^3';await r.fire('ink-result','input')}r.releaseImages();assert.equal(await applying,false);assert.deepEqual(plain(r.api.board),before);assert.match(r.node('ink-feedback').textContent,/取消|变化/);r.api.undo();assert.deepEqual(plain(r.api.board),initial);
+ }
+});
+
+test('PNG识别准备时回到另一历史，即使圈内笔迹相同也拒绝在新画板应用旧事务',async()=>{
+ const sibling={id:'other',type:'text',x:500,y:100,width:180,height:60,text:'初始说明'},work=deferred(),r=runtime([pen,sibling],{raster:()=>work.promise}),initial=plain(r.api.board);r.api.change(()=>{r.api.board.elements[1].text='此前修改的说明'});const prior=plain(r.api.board);await openLasso(r);r.node('ink-result').value='y=ax';const applying=r.api.math.applyInkResult();r.api.undo();assert.deepEqual(plain(r.api.board),initial);work.resolve(plain(fixtureRaster));assert.equal(await applying,false);assert.deepEqual(plain(r.api.board),initial);assert.match(r.node('ink-feedback').textContent,/变化|取消/);r.api.redo();assert.deepEqual(plain(r.api.board),prior);
+});
+
+test('同一识别结果异步确认期间重复点击不会重复插入PNG或产生两步历史',async()=>{
+ const work=deferred(),r=runtime([pen],{raster:()=>work.promise}),before=plain(r.api.board);await openLasso(r);r.node('ink-result').value='y=ax';const applying=r.api.math.applyInkResult();assert.equal(await r.api.math.applyInkResult(),false);assert.equal(r.node('ink-apply').disabled,true);work.resolve(plain(fixtureRaster));const candidate=await applying;assert.equal(candidate.type,'image');assert.equal(r.api.board.elements.length,1);r.api.undo();assert.deepEqual(plain(r.api.board),before);
+});
+
+test('同圈的公式PNG与笔迹一起预览和识别，两个来源与圈外剩余内容均保留',async()=>{
+ const nearbyPen={...plain(pen),id:'nearby',x:90,y:120,width:100},region=[{x:115,y:105},{x:150,y:105},{x:150,y:135},{x:115,y:135}];let captureSources;
+ const r=runtime([graphicFixture(),nearbyPen],{capture:async session=>{captureSources=plain(session.slices);return fixtureCapture(session)}}),before=plain(r.api.board);await openLasso(r,region);assert.equal(captureSources.length,2);assert.equal(captureSources[0].graphic,true);assert.equal(captureSources[1].inside.length,1);const outsidePen=plain(captureSources[1].outside);
+ r.node('ink-result').value='x+1';await r.fire('ink-result','input');const applying=r.api.math.applyInkResult();await settle();r.releaseImages();const candidate=await applying;assert.equal(candidate.type,'image');assert.deepEqual(plain(candidate.recognition.rawElements),before.elements);assert.equal(candidate.recognition.mappings.length,2);assert.deepEqual(plain(candidate.anchors),mapping.anchors);assert.deepEqual(plain(r.api.board.elements.filter(e=>e.type==='pen')),outsidePen);assert.ok(r.api.board.elements.find(e=>e.id==='formula'&&e.formulaGraphic.semanticStatus==='needs-review'));assert.equal(boardDiagnostics(plain(r.api.board)).length,0);r.api.undo();assert.deepEqual(plain(r.api.board),before);
+});
+
+function displayedContentSlots(r,element,specs,surface='element'){
+ const angle=(surface==='relation-label'?0:element.rotation||0)*Math.PI/180,cos=Math.cos(angle),sin=Math.sin(angle),center={x:element.x+element.width/2,y:element.y+element.height/2},rotate=p=>({x:center.x+(p.x-center.x)*cos-(p.y-center.y)*sin,y:center.y+(p.x-center.x)*sin+(p.y-center.y)*cos});
+ const displayed=specs.map(spec=>{const scale=spec.scales.reduce((a,b)=>a*b,1),width=spec.width*scale,height=spec.height*scale,worldCenter=rotate({x:spec.x+width/2,y:spec.y+height/2}),corners=[[spec.x,spec.y],[spec.x+width,spec.y],[spec.x+width,spec.y+height],[spec.x,spec.y+height]].map(([x,y])=>rotate({x,y})),v=r.api.view;
+  const foreign={tagName:'foreignObject'},parents=spec.scales.reduceRight((parent,s)=>({style:{transform:`matrix(${s},0,0,${s},0,0)`},parentElement:parent}),foreign),n={offsetWidth:spec.width,offsetHeight:spec.height,style:{fontSize:spec.fontSize+'px',transform:'none'},parentElement:parents,getAttribute:k=>k==='data-expression'&&spec.part!=='text'?spec.part:null,querySelector:()=>null,closest:selector=>selector==='foreignObject'?foreign:null,getBoundingClientRect:()=>({left:Math.min(...corners.map(p=>p.x))*v.scale+v.x,top:Math.min(...corners.map(p=>p.y))*v.scale+v.y,right:Math.max(...corners.map(p=>p.x))*v.scale+v.x,bottom:Math.max(...corners.map(p=>p.y))*v.scale+v.y})};return {...spec,width,height,fontSize:spec.fontSize*scale,worldCenter,n};
+ });
+ r.node('world').querySelectorAll=selector=>selector.includes(`g.${surface}[data-id="${element.id}"]`)?displayed.map(s=>s.n):[];return displayed;
+}
+const near=(actual,expected)=>assert.ok(Math.abs(actual-expected)<1e-7,`${actual} should equal ${expected}`);
+const assertDisplayedPart=(element,slot,width=slot.width,height=slot.height)=>{near(element.x,slot.worldCenter.x-width/2);near(element.y,slot.worldCenter.y-height/2);near(element.width,width);near(element.height,height);near(element.fontSize,slot.fontSize)};
+
+test('复合框转PNG时正文和全部公式按真实显示槽位拆开，空框保留导读名称而不重新居中',async()=>{
+ const source={...plain(rect),type:'frame',width:400,height:260,text:'处理输入\n保持原显示位置',extension:{sourceKey:'完整保存'}},calls=[],r=runtime([source],{raster:async(value,options)=>{calls.push({value,...options});return plain(fixtureRaster)}}),slots=displayedContentSlots(r,source,[{part:'text',x:124,y:121,width:220,height:36,fontSize:30,scales:[.8]},{part:'primary',x:160,y:174,width:100,height:56,fontSize:32,scales:[.75]},{part:'extra',x:250,y:224,width:120,height:60,fontSize:40,scales:[.6]}]);
+ const selected=await r.api.graphics.prepare('box','primary'),elements=r.api.board.elements,parent=elements.find(e=>e.id==='box'),text=elements.find(e=>e.type==='text'),primary=elements.find(e=>e.expressionOrigin==='primary'),extra=elements.find(e=>e.expressionOrigin==='extra');
+ assert.equal(elements.length,4);assert.equal(parent.type,'frame');assert.equal(parent.text,'');assert.equal(parent.math,'');assert.equal(parent.mathExpressions,undefined);assert.equal(parent.sourceTitle,'处理输入');for(const key of ['x','y','width','height'])assert.equal(parent[key],source[key]);assert.equal(selected.id,primary.id);assert.equal(text.text,source.text);assertDisplayedPart(text,slots[0]);assertDisplayedPart(primary,slots[1],63,42);assertDisplayedPart(extra,slots[2],54,36);assert.deepEqual(calls,[{value:'y=ax',fontSize:24},{value:'x>0',fontSize:24}]);
+ assert.equal(primary.type,'image');assert.equal(extra.type,'image');assert.deepEqual(plain(extra.metadata),{keep:true});for(const e of elements){assert.deepEqual(plain(e.implementation),mapping.implementation);assert.deepEqual(plain(e.anchors),mapping.anchors);assert.deepEqual(plain(e.custom),mapping.custom);assert.deepEqual(plain(e.extension),source.extension)}for(const image of [primary,extra]){assert.deepEqual(plain(image.formulaGraphic.sourceElement),source);assert.equal(image.formulaGraphic.expressionId,image.expressionOrigin);assert.equal(image.derivedFrom,'box');assert.equal(image.math,'');assert.match(image.image.src,/^data:image\/png;base64,/)}assert.equal(boardDiagnostics(plain(r.api.board)).length,0);
+});
+
+test('旋转且嵌套CSS缩放的复合框拆分只旋转一次，保留未旋转尺寸和显示字号',async()=>{
+ const source={...plain(rect),type:'frame',width:400,height:260,rotation:37,fontSize:18},r=runtime([source]),slots=displayedContentSlots(r,source,[{part:'text',x:124,y:121,width:240,height:48,fontSize:40,scales:[.8,.75]},{part:'primary',x:160,y:174,width:125,height:70,fontSize:40,scales:[.8,.75]},{part:'extra',x:250,y:224,width:120,height:60,fontSize:40,scales:[.8,.75]}]);
+ await r.api.graphics.prepare('box','extra');const elements=r.api.board.elements,parent=elements.find(e=>e.id==='box'),text=elements.find(e=>e.type==='text'),primary=elements.find(e=>e.expressionOrigin==='primary'),extra=elements.find(e=>e.expressionOrigin==='extra');assert.equal(elements.length,4);assert.equal(parent.rotation,37);assertDisplayedPart(text,slots[0]);assertDisplayedPart(primary,slots[1],63,42);assertDisplayedPart(extra,slots[2],54,36);for(const e of [text,primary,extra]){assert.equal(e.rotation,37);assert.equal(e.derivedFrom,'box');assert.deepEqual(plain(e.implementation),mapping.implementation);assert.deepEqual(plain(e.anchors),mapping.anchors)}near(text.width,144);near(text.height,28.8);near(text.fontSize,24);assert.equal(primary.formulaGraphic.expressionId,'primary');assert.equal(extra.formulaGraphic.expressionId,'extra');assert.deepEqual(plain(extra.formulaGraphic.sourceElement),source);assert.equal(boardDiagnostics(plain(r.api.board)).length,0);
+});
+
+test('水平连线的公式从relation-label真实槽位转换，保留原关系名称且不复制正文',async()=>{
+ for(const type of ['line','arrow']){
+  const source={...plain(mapping),id:'named-arrow',type,x:100,y:100,width:300,height:0,text:'交付处理结果',math:'y=ax',extension:{sourceKey:'原关系映射'}},r=runtime([source]),slots=displayedContentSlots(r,source,[{part:'text',x:320,y:72,width:200,height:30,fontSize:22,scales:[1]},{part:'primary',x:360,y:108,width:80,height:40,fontSize:28,scales:[.75]}],'relation-label'),nameBefore=r.evaluate("relationName(get('named-arrow'),A.flows)");
+  const image=await r.api.graphics.prepare('named-arrow','primary'),parent=r.api.board.elements.find(e=>e.id==='named-arrow');assert.equal(r.api.board.elements.length,2);assert.equal(parent.type,type);assert.equal(parent.text,'交付处理结果');assert.equal(parent.math,'');assert.equal(parent.mathExpressions,undefined);assert.equal(r.evaluate("relationName(get('named-arrow'),A.flows)"),nameBefore);assert.equal(r.api.board.elements.filter(e=>e.type==='text').length,0);for(const key of ['x','y','width','height'])assert.equal(parent[key],source[key]);assertDisplayedPart(image,slots[1],45,30);assert.equal(image.rotation,0);assert.equal(image.type,'image');assert.deepEqual(plain(image.formulaGraphic.sourceElement),source);assert.deepEqual(plain(parent.extension),source.extension);assert.deepEqual(plain(image.extension),source.extension);assert.deepEqual(plain(image.anchors),mapping.anchors);assert.deepEqual(plain(image.implementation),mapping.implementation);assert.equal(boardDiagnostics(plain(r.api.board)).length,0);
+ }
+});
+
+test('箭头旋转不旋转独立关系标签，两个公式保持标签显示位置、字号和来源',async()=>{
+ const source={...plain(rect),id:'named-arrow',type:'arrow',width:300,height:120,rotation:37,text:'交付处理结果'},r=runtime([source]),slots=displayedContentSlots(r,source,[{part:'text',x:450,y:170,width:200,height:30,fontSize:24,scales:[1]},{part:'primary',x:475,y:208,width:125,height:70,fontSize:40,scales:[.8,.75]},{part:'extra',x:510,y:256,width:120,height:60,fontSize:40,scales:[.8,.75]}],'relation-label');
+ const selected=await r.api.graphics.prepare('named-arrow','extra'),parent=r.api.board.elements.find(e=>e.id==='named-arrow'),primary=r.api.board.elements.find(e=>e.expressionOrigin==='primary'),extra=r.api.board.elements.find(e=>e.expressionOrigin==='extra');assert.equal(r.api.board.elements.length,3);assert.equal(parent.text,source.text);assert.equal(parent.rotation,37);assert.equal(r.evaluate("relationName(get('named-arrow'),A.flows)"),source.text);assert.equal(selected.id,extra.id);assertDisplayedPart(primary,slots[1],63,42);assertDisplayedPart(extra,slots[2],54,36);for(const image of [primary,extra]){assert.equal(image.rotation,0);near(image.fontSize,24);assert.equal(image.derivedFrom,'named-arrow');assert.deepEqual(plain(image.formulaGraphic.sourceElement),source);assert.deepEqual(plain(image.implementation),mapping.implementation);assert.deepEqual(plain(image.anchors),mapping.anchors)}assert.deepEqual(plain(extra.metadata),{keep:true});assert.equal(boardDiagnostics(plain(r.api.board)).length,0);
+});
+
+test('非等比缩放公式沿边补画仍为世界3px，横纵扩边分别留足且一次撤销恢复原图',async()=>{
+ const source={...graphicFixture(),width:60,height:80,image:{src:fixturePNG(120,40),width:120,height:40,alt:'数学图形'}};source.formulaGraphic.originalImage={src:source.image.src,width:120,height:40};
+ const r=runtime([source],{graphics:true}),before=plain(r.api.board);Object.assign(r.api.view,{x:0,y:0,scale:1});r.api.setTool('pen');await r.pointer('pointerdown',102,100);await r.pointer('pointermove',158,100);const raw=plain(r.api.board.elements.find(e=>e.type==='pen')),ending=r.pointer('pointerup',158,100);await settle();r.releaseImages();await ending;await r.api.graphics.flush();
+ const e=r.api.board.elements[0],paint=r.canvasLog.find(op=>op.kind==='stroke'),edit=e.formulaGraphic.edits[0];assert.equal(r.api.board.elements.length,1);assert.ok(paint);assert.deepEqual(paint.matrix,[2,0,0,.5,1,3]);assert.equal(paint.lineWidth,3);assert.deepEqual(paint.path,[{kind:'move',x:2,y:0},{kind:'line',x:58,y:0}]);assert.equal(e.image.width,122);assert.equal(e.image.height,43);near(paint.lineWidth*paint.matrix[0]*e.width/e.image.width,3);near(paint.lineWidth*paint.matrix[3]*e.height/e.image.height,3);assert.deepEqual(plain(edit.points),[[5,3],[117,3]]);assert.deepEqual(plain(edit.pixelScale),{x:2,y:.5});assert.deepEqual(plain(edit.imageOffset),{x:1,y:3});assert.equal(edit.strokeWidth,3);assert.equal(edit.strokeWidthSpace,'world');assert.deepEqual(plain(edit.rawElement),raw);assert.deepEqual(plain(edit.sourceGeometry),{x:100,y:100,width:60,height:80,rotation:0});assert.deepEqual(plain(e.formulaGraphic.originalImage),source.formulaGraphic.originalImage);assert.deepEqual(plain(e.implementation),mapping.implementation);assert.deepEqual(plain(e.anchors),mapping.anchors);assert.equal(boardDiagnostics(plain(r.api.board)).length,0);
+ const merged=plain(r.api.board);r.api.undo();assert.deepEqual(plain(r.api.board),before);r.api.redo();assert.deepEqual(plain(r.api.board),merged);
+});
+
+test('旋转非等比公式的单点补画绘制圆点，扩边后世界位置不漂移且原笔迹可撤销',async()=>{
+ const source={...graphicFixture(),width:60,height:80,rotation:30,image:{src:fixturePNG(120,40),width:120,height:40,alt:'数学图形'}};source.formulaGraphic.originalImage={src:source.image.src,width:120,height:40};
+ const r=runtime([source],{graphics:true}),before=plain(r.api.board),point=localToWorld(source,{x:160,y:180});Object.assign(r.api.view,{x:0,y:0,scale:1});r.api.setTool('pen');await r.pointer('pointerdown',point.x,point.y);r.evaluate('get(drag.id).points=[[0,0],[0,0]]');const raw=plain(r.api.board.elements.find(e=>e.type==='pen')),ending=r.pointer('pointerup',point.x,point.y);await settle();r.releaseImages();await ending;await r.api.graphics.flush();
+ const e=r.api.board.elements[0],paint=r.canvasLog.find(op=>op.kind==='fill'),edit=e.formulaGraphic.edits[0];assert.equal(r.api.board.elements.length,1);assert.ok(paint);assert.equal(r.canvasLog.filter(op=>op.kind==='stroke').length,0);assert.deepEqual(paint.matrix,[2,0,0,.5,0,0]);assert.equal(paint.path.length,1);assert.equal(paint.path[0].kind,'arc');near(paint.path[0].x,60);near(paint.path[0].y,80);near(paint.path[0].radius,1.5);assert.equal(e.rotation,30);near(e.image.width,125);near(e.image.height,43);near(paint.path[0].radius*2*paint.matrix[0]*e.width/e.image.width,3);near(paint.path[0].radius*2*paint.matrix[3]*e.height/e.image.height,3);
+ const pixel=edit.points[0],resultPoint=localToWorld(e,{x:e.x+pixel[0]*e.width/e.image.width,y:e.y+pixel[1]*e.height/e.image.height});near(resultPoint.x,point.x);near(resultPoint.y,point.y);const oldCorner=localToWorld(source,{x:source.x,y:source.y}),newCorner=localToWorld(e,{x:e.x,y:e.y});near(oldCorner.x,newCorner.x);near(oldCorner.y,newCorner.y);assert.deepEqual(plain(edit.rawElement),raw);assert.deepEqual(plain(edit.sourceGeometry),{x:100,y:100,width:60,height:80,rotation:30});assert.deepEqual(plain(e.custom),mapping.custom);assert.equal(boardDiagnostics(plain(r.api.board)).length,0);
+ const merged=plain(r.api.board);r.api.undo();assert.deepEqual(plain(r.api.board),before);r.api.redo();assert.deepEqual(plain(r.api.board),merged);
+});
+
+test('水平箭头旧公式直接补画使用关系标签世界槽位，名称源码与一步撤销完整保留',async()=>{
+ const source={...plain(mapping),id:'named-arrow',type:'arrow',x:100,y:100,width:300,height:0,text:'交付处理结果',math:'y=ax',extension:{sourceKey:'原关系映射'}},r=runtime([source],{graphics:true}),before=plain(r.api.board);Object.assign(r.api.view,{x:0,y:0,scale:1});displayedContentSlots(r,source,[{part:'text',x:320,y:72,width:200,height:30,fontSize:22,scales:[1]},{part:'primary',x:360,y:108,width:80,height:40,fontSize:28,scales:[.75]}],'relation-label');
+ r.api.setTool('pen');await r.pointer('pointerdown',380,123);await r.pointer('pointermove',400,123);const raw=plain(r.api.board.elements.find(e=>e.type==='pen')),ending=r.pointer('pointerup',400,123);await settle();assert.equal(r.imageRequests.length,1);r.releaseImages();await ending;await r.api.graphics.flush();
+ const parent=r.api.board.elements.find(e=>e.id==='named-arrow'),image=r.api.board.elements.find(e=>e.formulaGraphic);assert.equal(r.api.board.elements.length,2);assert.equal(parent.text,source.text);assert.equal(parent.height,0);assert.equal(parent.math,'');assert.equal(r.evaluate("relationName(get('named-arrow'),A.flows)"),source.text);assert.equal(r.api.board.elements.filter(e=>e.type==='text'||e.type==='pen').length,0);assert.ok(image);assert.equal(image.rotation,0);assert.equal(image.formulaGraphic.semanticStatus,'needs-review');assert.deepEqual(plain(image.formulaGraphic.sourceElement),source);assert.deepEqual(plain(image.formulaGraphic.edits[0].rawElement),raw);assert.deepEqual(plain(image.implementation),mapping.implementation);assert.deepEqual(plain(image.anchors),mapping.anchors);assert.deepEqual(plain(image.extension),source.extension);assert.equal(boardDiagnostics(plain(r.api.board)).length,0);
+ const merged=plain(r.api.board);r.api.undo();assert.deepEqual(plain(r.api.board),before);r.api.redo();assert.deepEqual(plain(r.api.board),merged);
 });

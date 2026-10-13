@@ -20,6 +20,28 @@ test('缺引用、重复标识、非法几何、代码混入人读均阻断整�
 test('画板修改带基线落地，陈旧版本拒绝且完整程序元数据保留',async t=>{const {call}=await fixture(t);const first=await call('board',{board:board()});const next=structuredClone(first.board);next.elements[0].text='新的工程意图';const pack=boardBundle(first.board,next,'model',first.anatomyHash);assert.equal((await call('apply_edits',pack)).ok,true);assert.equal((await call('board',{element:'a'})).element.implementation.extra.preserve,true);assert.equal((await call('apply_edits',pack)).ok,false)})
 
 const mathInk=()=>({mode:'math',strokes:[[[20,30],[80,100]]],reviewed:false,candidate:{text:'x ≥ 0',engine:'local-test',extension:{keep:true}},extension:{keep:true}})
+const formulaPng='data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAMAAAACCAIAAAASFvFNAAAAFUlEQVR4nGN0S1nAwMDAwMDAxAADABcWAU7Ylb4oAAAAAElFTkSuQmCC'
+const formulaImage=()=>({id:'formula',type:'image',x:0,y:0,width:300,height:200,math:'',image:{src:formulaPng,alt:'数学图形',width:3,height:2},formulaGraphic:{version:1,originalMath:String.raw`y = \frac{x}{2}`,originalImage:{src:formulaPng,width:3,height:2},currentMath:String.raw`y = \frac{x}{2}`,semanticStatus:'source-aligned',renderer:{name:'MathJax SVG',version:'3.2.2'},edits:[],extension:{keep:true}},implementation:{code:'return input / 2;'},extension:{keep:true}})
+test('公式图形机读分离原稿和当前表达，擦改待校对仍允许保存结构',()=>{
+  const e=formulaImage(),b={version:1,elements:[e]};assert.deepEqual(boardDiagnostics(b),[])
+  let program=elementProgram(e);assert.deepEqual(program.formulaGraphic,e.formulaGraphic);assert.equal(program.currentMath,e.formulaGraphic.currentMath);assert.equal(program.formulaPending,false);assert.deepEqual(program.mathExpressions,[])
+  e.formulaGraphic.currentMath=null;e.formulaGraphic.semanticStatus='needs-review';e.formulaGraphic.edits=[{kind:'erase',points:[[0,0],[2,1]],radius:.5,extension:{keep:true}},{kind:'ink',strokes:[[[1,1],[2,1]]],strokeWidth:1},{kind:'crop',x:0,y:0,width:2,height:1}]
+  assert.deepEqual(boardDiagnostics(b),[]);program=elementProgram(e);assert.equal(program.currentMath,null);assert.equal(program.formulaPending,true);assert.deepEqual(program.formulaGraphic.edits,e.formulaGraphic.edits)
+  program.formulaGraphic.edits[0].points[0][0]=99;assert.equal(e.formulaGraphic.edits[0].points[0][0],0)
+  const bundle=boardBundle({version:1,elements:[]},b,'model','baseline');assert.deepEqual(bundle.edits[0].patch.board,b)
+})
+test('公式图形校验来源、PNG、当前语义和编辑几何，不能伪称擦改后仍等同原稿',()=>{
+  const invalid=[e=>e.type='math',e=>e.math=e.formulaGraphic.originalMath,e=>e.mathExpressions=[{id:'extra',value:'x > 0'}],e=>e.formulaGraphic.version=2,e=>e.formulaGraphic.originalMath='',e=>e.formulaGraphic.originalImage.src='https://outside.example/a.png',e=>e.formulaGraphic.originalImage.width=99,e=>e.formulaGraphic.renderer.version='unknown',e=>e.formulaGraphic.semanticStatus='approved',e=>e.formulaGraphic.currentMath='y = x',e=>e.formulaGraphic.edits=[{kind:'erase',radius:1}],e=>{e.formulaGraphic.semanticStatus='needs-review'},e=>{e.formulaGraphic.semanticStatus='reviewed';e.formulaGraphic.currentMath='y = x'},e=>{e.formulaGraphic.semanticStatus='reviewed';e.formulaGraphic.review={visualHash:'bad'}},e=>{e.formulaGraphic.semanticStatus='needs-review';e.formulaGraphic.currentMath=null;e.formulaGraphic.edits=[{kind:'erase',points:[[NaN,0]]}]},e=>{e.formulaGraphic.semanticStatus='needs-review';e.formulaGraphic.currentMath=null;e.formulaGraphic.edits=[{kind:'ink',strokeWidth:-1}]},e=>{e.formulaGraphic.semanticStatus='needs-review';e.formulaGraphic.currentMath=null;e.formulaGraphic.edits=[{kind:'run'}]}]
+  for(const mutate of invalid){const e=formulaImage();mutate(e);assert.ok(boardDiagnostics({version:1,elements:[e]}).some(error=>error.code.startsWith('board/formula-')),mutate.toString())}
+  const reviewed=formulaImage();reviewed.formulaGraphic.semanticStatus='reviewed';reviewed.formulaGraphic.currentMath='y = x';reviewed.formulaGraphic.review={visualHash:'a'.repeat(64),extension:{keep:true}}
+  assert.deepEqual(boardDiagnostics({version:1,elements:[reviewed]}),[],'浏览器只校验指纹格式，真实图片指纹由严格工具门禁核对')
+})
+test('公式图形人读无原始排版源码和图片数据，机读保留原图及待校对义务',()=>{
+  const e=formulaImage();e.formulaGraphic.semanticStatus='needs-review';e.formulaGraphic.currentMath=null;e.formulaGraphic.edits=[{kind:'erase',points:[[0,0]],radius:1}]
+  const body={title:'数学工程',board:{version:1,elements:[e]}},human=humanMap(body,[],[]),machine=agentDigest(body,[],[])
+  assert.match(human,/数学图形（待校对）/);assert.ok(!human.includes('\\frac'));assert.ok(!human.includes('data:image/'));assert.ok(!human.includes('return input'))
+  assert.ok(machine.includes(JSON.stringify(e.formulaGraphic)));assert.ok(machine.includes('禁止按原稿冒充当前意图实施'));assert.ok(machine.includes('return input / 2;'))
+})
 test('主公式和附加公式可选择原笔迹或排版，旧字段不被强制迁移',()=>{
   const b=board(),e=b.elements[0];e.mathHandwriting=mathInk();e.mathDisplay='ink';e.mathExpressions=[{id:'constraint',value:'x ≥ 0',display:'ink',handwriting:mathInk(),extension:{keep:true}}]
   assert.deepEqual(boardDiagnostics(b),[])
@@ -74,7 +96,7 @@ test('连线停在形状边界，移动和删除端点后位置连续',()=>{cons
 test('连续拖动连线采用原始坐标，移动组合不二次偏移',()=>{const b=board(),original=structuredClone(b);moveElements(b,['link'],10,20,original);moveElements(b,['link'],30,40,original);assert.deepEqual(lineEnds(b.elements[2],b.elements),{a:{x:130,y:80},b:{x:330,y:80}});assert.equal(b.elements[2].from,undefined);const all=board();moveElements(all,['a','b','link'],30,40);assert.deepEqual(lineEnds(all.elements[2],all.elements),{a:{x:130,y:80},b:{x:330,y:80}});assert.equal(all.elements[2].from,'a')})
 test('已有器官可作为图元映射，但不强制引入三维',()=>{const b=boardFor({},[{id:'a',name:'处理',gist:'处理输入'}],[]);assert.deepEqual(b.elements[0].targets,[{kind:'organ',id:'a'}]);const html=renderAnatomy({title:'工程',board:board()},[],[]);assert.ok(!html.includes('chart3d'));assert.ok(html.includes('data-tool="polygon"'));assert.ok(html.includes('data-tab="program"'))})
 // Run the real inline client through DOM events; geometry and persistence are checked separately above.
-function runtime(b,options={}){const elements=new Map(),callbacks=new Map(),storage=options.storage||new Map();const node=id=>{if(elements.has(id))return elements.get(id);const listeners={};const n={id,value:'',innerHTML:'',textContent:'',style:{},dataset:{},listeners,attributes:{},classList:{add(){},remove(){},toggle(){return true}},setAttribute(k,v){this.attributes[k]=v},getAttribute(k){return this.attributes[k]},addEventListener(k,f){(listeners[k]??=[]).push(f)},querySelector(){return null},getBoundingClientRect(){return {left:0,top:0,width:1000,height:700}},setPointerCapture(){},showModal(){this.open=true},close(){this.open=false},focus(){},click(){},appendChild(){},remove(){}};elements.set(id,n);return n};const document={compatMode:'CSS1Compat',getElementById:node,querySelectorAll:()=>[],body:node('body'),addEventListener(k,f){callbacks.set(k,f)},createElement:()=>node('download')};const context={document,window:{addEventListener(){}},localStorage:{setItem(k,v){storage.set(k,v)},getItem(k){return storage.get(k)},removeItem(k){storage.delete(k)}},structuredClone,console,Blob,URL,AbortController,setTimeout:()=>0,clearTimeout(){},...options.globals};const html=renderAnatomy({slug:'model',title:'工程',board:b},[],[]);vm.runInNewContext(html.match(/<script>([\s\S]*)<\/script>/)[1],context);return {api:context.window.__anatomyBoard,node,callbacks,storage,fire(id,type,ev={}){for(const f of node(id).listeners[type]||[])f(ev)}}}
+function runtime(b,options={}){const elements=new Map(),callbacks=new Map(),storage=options.storage||new Map();const node=id=>{if(elements.has(id))return elements.get(id);const listeners={};const n={id,value:'',innerHTML:'',textContent:'',style:{},dataset:{},listeners,attributes:{},classList:{add(){},remove(){},toggle(){return true}},setAttribute(k,v){this.attributes[k]=v},getAttribute(k){return this.attributes[k]},addEventListener(k,f){(listeners[k]??=[]).push(f)},querySelector(){return null},getBoundingClientRect(){return {left:0,top:0,width:1000,height:700}},setPointerCapture(){},showModal(){this.open=true},close(){this.open=false},focus(){},click(){},appendChild(){},remove(){}};elements.set(id,n);return n};const document={compatMode:'CSS1Compat',getElementById:node,querySelectorAll:()=>[],body:node('body'),addEventListener(k,f){callbacks.set(k,f)},createElement:()=>node('download')};const context={document,window:{addEventListener(){}},localStorage:{setItem(k,v){storage.set(k,v)},getItem(k){return storage.get(k)},removeItem(k){storage.delete(k)}},structuredClone,console,Blob,URL,AbortController,setTimeout:()=>0,clearTimeout(){},...options.globals};const html=renderAnatomy({slug:'model',title:'工程',board:b},[],[]);vm.runInNewContext(html.match(/<script>([\s\S]*)<\/script>/)[1],context);return {context,api:context.window.__anatomyBoard,node,callbacks,storage,fire(id,type,ev={}){for(const f of node(id).listeners[type]||[])f(ev)}}}
 const ev=(x,y,id)=>({button:0,clientX:x,clientY:y,pointerId:1,preventDefault(){},target:{closest(q){return q==='[data-id]'&&id?{getAttribute:()=>id}:null}}})
 test('真实前端事件完成绘制、撤销重做、机读编辑和自然语言隔离',()=>{const r=runtime(board());r.api.select('a');assert.ok(!r.node('inspector').innerHTML.includes('return input;'));r.api.setTool('rect');r.fire('surface','pointerdown',ev(150,150));r.fire('surface','pointermove',ev(360,260));r.fire('surface','pointerup',ev(360,260));assert.equal(r.api.board.elements.length,4);const id=r.api.selected[0];assert.equal(r.api.board.elements[3].type,'rect');r.api.undo();assert.equal(r.api.board.elements.length,3);r.api.redo();assert.equal(r.api.board.elements.length,4);r.api.select(id);r.api.canvas.openProgram(id);r.fire('inspector','input',{target:{dataset:{field:'implementation.code'},value:'const answer = 42;',type:'textarea'}});r.api.canvas.confirm();assert.equal(r.api.bundle().edits[0].patch.board.elements[3].implementation.code,'const answer = 42;');assert.ok(!r.node('world').innerHTML.includes('const answer'));assert.ok(r.storage.size>0);r.api.undo();assert.equal(r.api.board.elements[3].implementation,undefined)})
 test('自由笔迹和逐点多边形经实际事件形成有效可映射图元',()=>{const r=runtime({version:1,elements:[]});r.api.setTool('pen');r.fire('surface','pointerdown',ev(100,100));r.fire('surface','pointermove',ev(120,130));r.fire('surface','pointermove',ev(180,110));r.fire('surface','pointerup',ev(180,110));assert.equal(r.api.board.elements[0].type,'pen');r.api.setTool('polygon');for(const p of [[200,100],[300,100],[260,200]])r.fire('surface','pointerdown',ev(...p));r.callbacks.get('keydown')({key:'Enter',target:{},preventDefault(){}});assert.equal(r.api.board.elements[1].type,'polygon');assert.deepEqual(boardDiagnostics(r.api.board),[]);r.api.duplicate();assert.equal(r.api.board.elements.length,3);r.api.remove();assert.equal(r.api.board.elements.length,2)})
@@ -88,7 +110,13 @@ test('连线上的数学表达在画布可见',()=>{const b=board();b.elements[2
 
 test('公式库覆盖分式微积分矩阵概率逻辑工程关系，全部真实排版',()=>{let count=0;for(const [category,entries] of FORMULA_GROUPS){assert.ok(entries.length>=6);for(const [name,source] of entries){const result=formulaMarkup(source,katex);assert.equal(result.error,null,category+':'+name);assert.match(result.html,/<math/);count++}}assert.ok(count>=40);assert.ok(MATH_SYMBOL_GROUPS.length>=4);assert.match(formulaMarkup(String.raw`\frac{x^2}{\sqrt{y}}`,katex).html,/<mfrac>/);assert.match(formulaMarkup(String.raw`\begin{bmatrix}a&b\\c&d\end{bmatrix}`,katex).html,/<mtable[ >]/)})
 test('公式解析错误有可读回退，不允许公式加载远程资源或执行程序',()=>{assert.ok(formulaMarkup(String.raw`\frac{a`,katex).error);const result=formulaMarkup(String.raw`\href{javascript:alert(1)}{x}`,katex);assert.ok(!result.html.includes('href="javascript:'));assert.ok(!formulaMarkup(String.raw`\includegraphics{https://example.com/x.png}`,katex).html.includes('<img'));assert.ok(formulaMarkup('x'.repeat(10001),katex).error)})
-test('公式编辑确认后更新对应图元，保留实现映射并可撤销',()=>{const r=runtime(board());r.api.select('a');r.api.math.openFormulaLibrary({mode:'edit',expression:'primary'});assert.equal(r.node('formula-dialog').open,true);r.node('formula-input').value=String.raw`\int_0^1 x^2\,\mathrm{d}x`;r.api.math.applyFormula();assert.equal(r.api.board.elements[0].math,r.node('formula-input').value);assert.equal(r.api.board.elements[0].implementation.code,'return input;');r.api.undo();assert.equal(r.api.board.elements[0].math,'y = f(x)')})
+function graphicRuntime(b,options={}){const r=runtime(b,options);r.context.testRasterBoundary=options.raster|| (async()=>({src:formulaPng,width:3,height:2,displayWidth:150,displayHeight:100}));vm.runInNewContext('rasterFormula = testRasterBoundary',r.context);return r}
+test('公式库确认异步生成独立PNG图形，原公式与实现映射保留且可撤销',async()=>{
+  const r=graphicRuntime(board()),source=String.raw`\int_0^1 x^2\,\mathrm{d}x`;r.api.select('a');r.api.math.openFormulaLibrary({value:source});assert.equal(r.node('formula-dialog').open,true)
+  const inserted=await r.api.math.applyFormula();assert.equal(inserted.type,'image');assert.equal(inserted.math,'');assert.equal(inserted.image.src,formulaPng);assert.equal(inserted.formulaGraphic.originalMath,source);assert.equal(inserted.formulaGraphic.currentMath,source);assert.equal(inserted.formulaGraphic.semanticStatus,'source-aligned');assert.deepEqual(boardDiagnostics(r.api.board),[])
+  assert.equal(r.api.board.elements[0].math,'y = f(x)');assert.equal(r.api.board.elements[0].implementation.code,'return input;');assert.equal(r.api.board.elements.length,4)
+  r.api.undo();assert.equal(r.api.board.elements.length,3);assert.equal(r.api.board.elements[0].math,'y = f(x)');r.api.redo();assert.equal(r.api.board.elements[3].formulaGraphic.currentMath,source)
+})
 test('手写结果经校对确认才写入，保留原笔迹、程序表达和撤销能力',()=>{const r=runtime(board());r.api.select('a');r.node('ink-result').value='接收请求后检查输入';r.node('ink-destination').value='new';const before=r.api.board.elements.length;assert.equal(before,3);r.api.math.applyInkResult();assert.equal(r.api.board.elements.length,4);assert.equal(r.api.board.elements[3].text,'接收请求后检查输入');assert.equal(r.api.board.elements[3].handwriting.reviewed,true);assert.equal(r.api.board.elements[0].implementation.code,'return input;');r.api.undo();assert.equal(r.api.board.elements.length,3);r.node('ink-result').value='const x = 1';r.api.math.applyInkResult();assert.equal(r.api.board.elements.length,3)})
 
 
@@ -112,30 +140,19 @@ test('导读引用和人读语言必须通过检查，删除图元清理步骤�
 test('自由布局选择不被刷新状态覆盖，撤销恢复自动布局',()=>{const r=runtime(board());r.node('manual-layout').checked=true;r.fire('manual-layout','change');assert.equal(r.api.board.layout.mode,'manual');assert.equal(r.node('manual-layout').checked,true);r.api.undo();assert.equal(r.node('manual-layout').checked,false)})
 
 
-test('公式库默认追加，逐条编辑与独立新建均保留原有表达和程序映射',()=>{
-  const r=runtime(board());r.api.select('a');r.api.math.openFormulaLibrary();
-  assert.equal(r.node('formula-operation').value,'append');assert.equal(r.node('formula-input').value,'');
-  r.node('formula-input').value='z = x + y';r.fire('formula-apply','click');
-  const first=r.api.board.elements[0],id=first.mathExpressions[0].id;
-  assert.equal(first.math,'y = f(x)');assert.equal(first.mathExpressions[0].value,'z = x + y');
-  assert.equal(first.implementation.code,'return input;');assert.ok(r.node('world').innerHTML.includes('data-expression="'+id+'"'));
-  r.api.math.openFormulaLibrary({mode:'edit',expression:id});assert.equal(r.node('formula-input').value,'z = x + y');
-  r.node('formula-input').value='z = x - y';r.fire('formula-apply','click');
-  assert.equal(r.api.board.elements[0].mathExpressions[0].id,id);assert.equal(r.api.board.elements[0].mathExpressions[0].value,'z = x - y');
-  assert.equal(r.api.board.elements[0].math,'y = f(x)');r.fire('undo','click');assert.equal(r.api.board.elements[0].mathExpressions[0].value,'z = x + y');
-  r.fire('redo','click');assert.equal(r.api.board.elements[0].mathExpressions[0].value,'z = x - y');
-  r.api.math.openFormulaLibrary({mode:'new'});r.node('formula-input').value='a = b';r.fire('formula-apply','click');
-  assert.equal(r.api.board.elements.length,4);assert.equal(r.api.board.elements[3].math,'a = b');assert.equal(r.api.board.elements[0].mathExpressions[0].value,'z = x - y');
-  r.fire('undo','click');assert.equal(r.api.board.elements.length,3);r.fire('redo','click');assert.equal(r.api.board.elements.length,4)
+test('公式库默认独立新建，多次生成保留原有表达和程序映射',async()=>{
+  const r=graphicRuntime(board());r.api.select('a');r.api.math.openFormulaLibrary();assert.equal(r.node('formula-operation').value,'new');assert.equal(r.node('formula-input').hidden,true)
+  const source=r.node('formula-input').value;await r.api.math.applyFormula();assert.equal(r.api.board.elements.length,4);assert.equal(r.api.board.elements[3].formulaGraphic.currentMath,source)
+  r.api.math.openFormulaLibrary({value:'z = x - y'});await r.api.math.applyFormula();assert.equal(r.api.board.elements.length,5);assert.equal(r.api.board.elements[4].formulaGraphic.currentMath,'z = x - y');assert.equal(r.api.board.elements[3].formulaGraphic.currentMath,source)
+  assert.equal(r.api.board.elements[0].math,'y = f(x)');assert.equal(r.api.board.elements[0].implementation.code,'return input;');assert.equal(r.api.board.elements[0].mathExpressions,undefined)
+  r.fire('undo','click');assert.equal(r.api.board.elements.length,4);r.fire('redo','click');assert.equal(r.api.board.elements.length,5);assert.deepEqual(boardDiagnostics(r.api.board),[])
 })
-test('模板插入保留编辑草稿，关闭和失效目标不覆盖原公式',()=>{
-  const r=runtime(board());r.api.select('a');r.api.math.openFormulaLibrary({mode:'edit',expression:'primary'});
-  const input=r.node('formula-input');input.selectionStart=1;input.selectionEnd=1;
-  r.fire('formula-templates','click',{target:{closest:()=>({dataset:{template:'0'}})}});
-  assert.ok(input.value.startsWith('y'));assert.ok(input.value.endsWith(' = f(x)'));assert.equal(r.api.board.elements[0].math,'y = f(x)');
-  r.fire('formula-close','click');assert.equal(r.api.board.elements[0].math,'y = f(x)');
-  r.api.math.openFormulaLibrary({mode:'edit',expression:'primary'});input.value='y = x';r.api.change(()=>r.api.board.elements[0].math='y = 2x');
-  r.fire('formula-apply','click');assert.equal(r.api.board.elements[0].math,'y = 2x');assert.match(r.node('formula-feedback').textContent,/已变化/)
+test('模板选择只更新图形预览，关闭不写原公式，异步转换期间变化拒绝插入',async()=>{
+  let finish;const r=graphicRuntime(board(),{raster:()=>new Promise(resolve=>finish=resolve)});r.api.select('a');r.api.math.openFormulaLibrary({value:'y = x'})
+  r.fire('formula-templates','click',{target:{closest:()=>({dataset:{template:'0'}})}});assert.equal(r.node('formula-input').hidden,true);assert.equal(r.node('formula-input').value,FORMULA_GROUPS[0][1][0][1]);assert.equal(r.api.board.elements[0].math,'y = f(x)')
+  r.fire('formula-close','click');assert.equal(r.api.board.elements.length,3);assert.equal(r.api.board.elements[0].math,'y = f(x)')
+  r.api.math.openFormulaLibrary({value:'y = x'});const pending=r.api.math.applyFormula();r.api.change(()=>r.api.board.elements[0].math='y = 2x');finish({src:formulaPng,width:3,height:2,displayWidth:150,displayHeight:100})
+  assert.equal(await pending,false);assert.equal(r.api.board.elements.length,3);assert.equal(r.api.board.elements[0].math,'y = 2x');assert.equal(r.node('formula-dialog').open,true)
 })
 test('手写数学可追加或明确编辑单条，原公式与原笔迹均保留',()=>{
   const b=board();b.elements[0].handwriting={mode:'math',reviewed:true,strokes:[[[10,10],[20,20]]]};
@@ -215,10 +232,8 @@ test('普通手写入口兼容只保留独立主公式笔迹的部位',()=>{
   assert.equal(r.api.board.elements[0].mathHandwriting.candidate.engine,'separate-test')
 })
 
-test('画板公式确认不重建独立机读区，内容与几何作为同一步撤销',()=>{
-  const r=runtime(board());r.api.select('a');const before=JSON.stringify(r.api.board),inspector=r.node('inspector');
-  let html=inspector.innerHTML,rebuilds=0;Object.defineProperty(inspector,'innerHTML',{get:()=>html,set:value=>{rebuilds++;html=value}});
-  const value='y = x + '.repeat(20)+'1';r.api.math.openFormulaLibrary({mode:'edit',expression:'primary'});r.node('formula-input').value=value;r.fire('formula-apply','click');
-  assert.equal(rebuilds,0);assert.notEqual(JSON.stringify(r.api.board),before);r.fire('undo','click');assert.equal(JSON.stringify(r.api.board),before);assert.equal(r.node('undo').disabled,true);
-  r.fire('redo','click');assert.equal(r.api.board.elements[0].math,value)
+test('独立公式图形创建是一个全局撤销步骤，保留原有图元机读内容',async()=>{
+  const r=graphicRuntime(board());r.api.select('a');const before=JSON.stringify(r.api.board);r.api.math.openFormulaLibrary({value:'y = x + 1'});await r.api.math.applyFormula()
+  assert.notEqual(JSON.stringify(r.api.board),before);assert.equal(r.api.board.elements[0].implementation.code,'return input;');assert.equal(r.api.board.elements[3].formulaGraphic.currentMath,'y = x + 1')
+  r.fire('undo','click');assert.equal(JSON.stringify(r.api.board),before);assert.equal(r.node('undo').disabled,true);r.fire('redo','click');assert.equal(r.api.board.elements[3].formulaGraphic.currentMath,'y = x + 1')
 })

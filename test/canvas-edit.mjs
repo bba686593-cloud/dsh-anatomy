@@ -314,22 +314,17 @@ test('两次近距真实指针点击重绘后的文字仍打开原位编辑并�
   assert.equal(r.api.board.elements[1].text, '双击编辑输出部位。')
 })
 
-test('两次真实指针点击额外公式按稳定标识编辑，保留原有主公式', () => {
-  const r = runtime(fixture())
+test('两次真实指针点击公式只选择图形，不打开LaTeX输入且保留正文与映射', () => {
+  const r = runtime(fixture()),before=JSON.stringify(r.api.board)
   r.fire('surface', 'pointerdown', pointerEvent(220, 320, 'a', 'constraint'))
   r.fire('surface', 'pointerup', pointerEvent(220, 320, 'a', 'constraint'))
   r.fire('surface', 'pointerdown', pointerEvent(221, 321, 'a', 'constraint'))
-  assert.equal(r.node('inline-writing').hidden, false)
+  assert.equal(r.node('inline-writing').hidden, true)
   assert.equal(r.node('formula-dialog').open, false)
-  assert.equal(r.api.canvas.draft.value.mathExpressions[0].value, 'x ≥ 0')
-  r.api.paper.equation('constraint', 'x > 0')
-  r.fire('paper-confirm', 'click')
-  assert.equal(r.api.board.elements[0].math, 'y = f(x)')
-  assert.equal(r.api.board.elements[0].mathExpressions[0].id, 'constraint')
-  assert.equal(r.api.board.elements[0].mathExpressions[0].value, 'x > 0')
-  assert.equal(r.api.board.elements[0].mathExpressions[0].evidence.reviewed, true)
+  assert.equal(r.api.canvas.draft, null)
+  assert.equal(JSON.stringify(r.api.board),before)
+  assert.match(r.node('toast').textContent,/公式是画板图形/)
 })
-
 
 test('关闭未改动纸页后原生双击仍可重新打开并直接编辑', () => {
   const r = runtime(fixture())

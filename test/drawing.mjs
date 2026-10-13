@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import vm from 'node:vm'
-import { localToWorld, worldToLocal, resizeHandles, resizeElement, movePolygonVertex, rotateElement, cutPolyline, erasePen, drawingClientSource } from '../lib/drawing.js'
+import { localToWorld, worldToLocal, resizeHandles, resizeElement, movePolygonVertex, rotateElement, cutPolyline, erasePen, lassoHit, lassoSelection, clipPenToLasso, drawingClientSource } from '../lib/drawing.js'
 import { boardDiagnostics } from '../lib/board.js'
 
 const near = (actual, expected, message = '') => assert.ok(Math.abs(actual - expected) < 1e-8, message + ': ' + actual + ' ≈ ' + expected)
@@ -181,4 +181,139 @@ test('纯绘图helpers在浏览器源码中自包含，非法坐标不能产生N
   assert.throws(() => movePolygonVertex({ ...e, type: 'polygon', points: [[0, 0], [1, 0], [0, 1]] }, 3, { x: 0, y: 0 }), /顶点/)
   assert.throws(() => rotateElement(e, { x: NaN, y: 0 }), /有限/)
   assert.throws(() => cutPolyline([[0, 0], [1, 1]], { x: 0, y: 0, radius: 0 }), /半径/)
+})
+
+const region = (left, top, right, bottom) => [[left, top], [right, top], [right, bottom], [left, bottom]]
+const horizontalPen = () => ({ id: 'lasso-ink', type: 'pen', x: -3, y: -.5, width: 6, height: 1, rotation: 0, points: [[0, .5], [1, .5]], ...metadata() })
+
+test('套索按薄笔迹的实际线段选中顶点之间，空包围盒与中心不能冒充笔迹', () => {
+  const thin = { id: 'thin', type: 'pen', x: 0, y: 4.5, width: 100, height: 1, points: [[0, .5], [1, .5]], strokeWidth: .00001 }
+  assert.equal(lassoHit(thin, region(80, 4.9999, 81, 5.0001)), true)
+  const corner = { ...thin, id: 'corner', x: 0, y: 0, width: 100, height: 100, points: [[0, 0], [1, 0], [1, 1]] }
+  assert.equal(lassoHit(corner, region(45, 45, 55, 55)), false)
+  assert.deepEqual(lassoSelection([thin, corner], region(80, 4.9999, 81, 5.0001)), ['thin'])
+})
+
+test('套索命中旋转后的真实多边形顶点、椭圆轮廓与填充体，不把空框内部当边线', () => {
+  const triangle = { ...box(), type: 'polygon', fill: 'none', strokeWidth: .00001, points: [[0, 0], [1, 0], [0, 1]] }
+  assert.equal(lassoHit(triangle, region(11.95, 15.95, 12.05, 16.05)), true)
+  assert.equal(lassoHit(triangle, region(50, 50, 51, 51)), false)
+  const frame = { id: 'frame', type: 'frame', x: 0, y: 0, width: 100, height: 100, fill: 'none', strokeWidth: 1 }
+  assert.equal(lassoHit(frame, region(20, 20, 30, 30)), false)
+  assert.equal(lassoHit({ ...frame, type: 'rect', fill: '#ffffff' }, region(20, 20, 30, 30)), true)
+  const ellipse = { id: 'ellipse', type: 'ellipse', x: 0, y: 0, width: 20, height: 10, rotation: 30, fill: 'none', strokeWidth: .00001 }
+  const edge = localToWorld(ellipse, { x: 10 + 10 * Math.cos(.123), y: 5 + 5 * Math.sin(.123) })
+  assert.equal(lassoHit(ellipse, region(edge.x - .001, edge.y - .001, edge.x + .001, edge.y + .001)), true)
+})
+
+test('套索选择绑定连线时使用当前真实端点而不是失效存储位置', () => {
+  const source = { id: 'source', type: 'rect', x: 10, y: 0, width: 20, height: 20 }, target = { ...source, id: 'target', x: 200 }
+  const arrow = { id: 'arrow', type: 'arrow', x: 0, y: 100, width: 1, height: 1, from: 'source', to: 'target', strokeWidth: 1 }
+  const elements = [source, target, arrow], polygon = region(100, 9, 110, 11)
+  assert.equal(lassoHit(arrow, polygon, elements), true)
+  assert.deepEqual(lassoSelection({ version: 1, elements }, polygon), ['arrow'])
+})
+
+test('套索精确切出局部笔迹，原id按路径顺序保留，圈外片段和完整源码映射独立保存', () => {
+  const e = horizontalPen(), before = JSON.stringify(e); let next = 1
+  const cut = clipPenToLasso(e, region(-1, -1, 1, 1), () => 'lasso-piece-' + ++next)
+  assert.equal(cut.changed, true); assert.equal(cut.inside.length, 1); assert.equal(cut.outside.length, 2)
+  assert.equal(cut.outside[0].id, e.id); assert.equal(cut.inside[0].id, 'lasso-piece-2'); assert.equal(cut.outside[1].id, 'lasso-piece-3')
+  pointNear(worldPoints(cut.outside[0])[0], [-3, 0]); pointNear(worldPoints(cut.outside[0]).at(-1), [-1, 0])
+  pointNear(worldPoints(cut.inside[0])[0], [-1, 0]); pointNear(worldPoints(cut.inside[0]).at(-1), [1, 0])
+  pointNear(worldPoints(cut.outside[1])[0], [1, 0]); pointNear(worldPoints(cut.outside[1]).at(-1), [3, 0])
+  for (const fragment of [...cut.inside, ...cut.outside]) {
+    assert.equal(fragment.fragmentOf, e.id)
+    for (const key of Object.keys(metadata())) assert.deepEqual(fragment[key], e[key], key)
+  }
+  const outside = JSON.stringify(cut.outside); cut.inside[0].math = 'z = 2x'; cut.inside[0].extension.nested[0] = '圈内修改'
+  assert.equal(JSON.stringify(cut.outside), outside)
+  assert.equal(JSON.stringify(e), before)
+  assert.deepEqual(boardDiagnostics({ version: 1, elements: [...cut.inside, ...cut.outside] }, [{ id: 'input' }]), [])
+})
+
+test('旋转笔迹按世界区域裁切，新片的归一化包围盒不会改变剩余曲线', () => {
+  const e = { ...horizontalPen(), x: -4, y: -1, width: 8, height: 2, rotation: 45 }, before = JSON.stringify(e); let next = 0
+  const cut = clipPenToLasso(e, region(-1, -1, 1, 1), () => 'rotated-piece-' + ++next)
+  assert.equal(cut.inside.length, 1); assert.equal(cut.outside.length, 2)
+  pointNear(worldPoints(cut.inside[0])[0], [-1, -1]); pointNear(worldPoints(cut.inside[0]).at(-1), [1, 1])
+  const original = worldPoints(e)
+  pointNear(worldPoints(cut.outside[0])[0], [original[0].x, original[0].y])
+  pointNear(worldPoints(cut.outside[1]).at(-1), [original[1].x, original[1].y])
+  assert.equal(JSON.stringify(e), before)
+})
+
+test('自交套索使用奇偶区域，不用有向面积为零拒绝，多个选中片与中间圈外片不混合', () => {
+  const bowtie = [[0, 0], [4, 4], [0, 4], [4, 0]]
+  const e = { id: 'bowtie-ink', type: 'pen', x: .5, y: -1, width: 1, height: 6, points: [[0, 0], [0, 1]], strokeWidth: .00001 }; let next = 0
+  const cut = clipPenToLasso(e, bowtie, () => 'bowtie-piece-' + ++next)
+  assert.equal(cut.changed, true); assert.equal(cut.inside.length, 2); assert.equal(cut.outside.length, 3)
+  pointNear(worldPoints(cut.inside[0])[0], [.5, 0]); pointNear(worldPoints(cut.inside[0]).at(-1), [.5, .5])
+  pointNear(worldPoints(cut.inside[1])[0], [.5, 3.5]); pointNear(worldPoints(cut.inside[1]).at(-1), [.5, 4])
+  pointNear(worldPoints(cut.outside[1])[0], [.5, .5]); pointNear(worldPoints(cut.outside[1]).at(-1), [.5, 3.5])
+  assert.equal(lassoHit(e, bowtie), true)
+})
+
+test('套索仅接触一个顶点不生成零长片，沿边界的实际笔迹归圈内', () => {
+  const polygon = region(0, 0, 1, 1), touch = { id: 'touch', type: 'pen', x: -1, y: -1, width: 1, height: 2, points: [[0, 0], [1, .5], [0, 1]], strokeWidth: .00001 }
+  const tangent = clipPenToLasso(touch, polygon)
+  assert.equal(tangent.changed, false); assert.deepEqual(tangent.inside, []); assert.deepEqual(tangent.outside, [touch])
+  const boundary = { id: 'boundary', type: 'pen', x: -1, y: -.5, width: 3, height: 1, points: [[0, .5], [1, .5]] }; let next = 0
+  const cut = clipPenToLasso(boundary, polygon, () => 'boundary-piece-' + ++next)
+  assert.equal(cut.inside.length, 1); assert.equal(cut.outside.length, 2)
+  pointNear(worldPoints(cut.inside[0])[0], [0, 0]); pointNear(worldPoints(cut.inside[0]).at(-1), [1, 0])
+})
+
+test('全内、全外和极短点状笔迹不产生无意义切片，也不失去身份或旧证据', () => {
+  const e = { ...horizontalPen(), recognition: { text: '旧样本', reviewed: true, extension: { keep: true } } }
+  const full = clipPenToLasso(e, region(-5, -5, 5, 5)), missed = clipPenToLasso(e, region(10, 10, 11, 11))
+  assert.equal(full.changed, false); assert.deepEqual(full.inside, [e]); assert.deepEqual(full.outside, [])
+  assert.equal(missed.changed, false); assert.deepEqual(missed.inside, []); assert.deepEqual(missed.outside, [e])
+  assert.notEqual(full.inside[0], e)
+  for (const points of [[[0, 0], [0, 0]], [[0, 0], [1e-10, 0]]]) {
+    const dot = { id: 'dot', type: 'pen', x: 0, y: 0, width: 1, height: 1, points }
+    assert.deepEqual(clipPenToLasso(dot, region(-1, -1, 1, 1)).inside, [dot])
+  }
+})
+
+test('部分套索切片失效旧识别显示，同时保留每条原映射并通过完整画板校验', () => {
+  const e = { ...horizontalPen(), fragmentOf: 'original', mathDisplay: 'ink', mathHandwriting: { mode: 'math', strokes: [[[0, 0], [100, 100]]], reviewedValue: 'y = x' }, recognition: { mode: 'math', text: 'y = x', stale: false, extension: { keep: true } } }; let next = 0
+  assert.deepEqual(boardDiagnostics({ version: 1, elements: [e] }, [{ id: 'input' }]), [])
+  const cut = clipPenToLasso(e, region(0, -1, 5, 1), () => 'recognized-piece-' + ++next)
+  for (const fragment of [...cut.inside, ...cut.outside]) {
+    assert.equal(fragment.fragmentOf, 'original'); assert.equal(fragment.mathDisplay, undefined); assert.equal(fragment.mathHandwriting, undefined)
+    assert.deepEqual(fragment.recognition, { ...e.recognition, stale: true })
+    assert.deepEqual(fragment.anchors, e.anchors)
+  }
+  assert.deepEqual(boardDiagnostics({ version: 1, elements: [...cut.inside, ...cut.outside] }, [{ id: 'input' }]), [])
+})
+
+test('缩放和平移只影响UI坐标换算，同一世界套索总选中相同薄笔迹', () => {
+  const e = { id: 'scaled', type: 'pen', x: 0, y: 0, width: 100, height: 1, points: [[0, .5], [1, .5]], strokeWidth: .00001 }, polygon = region(80, .4, 81, .6)
+  for (const scale of [.25, 1, 3]) {
+    const screen = polygon.map(([x, y]) => [125 + x * scale, 75 + y * scale]), world = screen.map(([x, y]) => ({ x: (x - 125) / scale, y: (y - 75) / scale }))
+    assert.deepEqual(lassoSelection([e], world), ['scaled'])
+    let next = 0; const cut = clipPenToLasso(e, world, () => 'scaled-piece-' + ++next)
+    pointNear(worldPoints(cut.inside[0])[0], [80, .5]); pointNear(worldPoints(cut.inside[0]).at(-1), [81, .5])
+  }
+})
+
+test('形状非零填充与套索奇偶填充分别使用自身规则，重复套索圈不会误认内区', () => {
+  const twice = [[0, 0], [2, 0], [2, 2], [0, 2], [0, 0], [2, 0], [2, 2], [0, 2]]
+  const shape = { id: 'nonzero', type: 'polygon', x: 0, y: 0, width: 2, height: 2, points: twice.map(([x, y]) => [x / 2, y / 2]), fill: '#ffffff', strokeWidth: .00001 }
+  assert.equal(lassoHit(shape, region(.5, .5, 1, 1)), true)
+  const stroke = { id: 'even-odd', type: 'pen', x: .5, y: 0, width: 1, height: 1, points: [[0, .5], [1, .5]], strokeWidth: .00001 }
+  assert.equal(lassoHit(stroke, twice), false)
+  assert.deepEqual(clipPenToLasso(stroke, twice).outside, [stroke])
+})
+
+test('套索源码注入保持自包含，非法新id或区域不会改变原笔迹', () => {
+  const e = horizontalPen(), before = JSON.stringify(e), context = { structuredClone, e, polygon: region(-1, -1, 1, 1) }
+  vm.runInNewContext(drawingClientSource() + ';let next=0;cut=clipPenToLasso(e,polygon,()=>"browser-piece-"+(++next));picked=lassoSelection([e],polygon);', context)
+  assert.equal(context.cut.inside.length, 1); assert.equal(context.cut.outside.length, 2)
+  assert.deepEqual(Array.from(context.picked), [e.id])
+  assert.throws(() => clipPenToLasso(e, region(-1, -1, 1, 1), () => e.id), /唯一/)
+  assert.throws(() => lassoHit(e, [[0, 0], [1, 1]]), /三个/)
+  assert.throws(() => clipPenToLasso(e, [[0, 0], [1, 1], [NaN, 2]]), /有限/)
+  assert.equal(JSON.stringify(e), before)
 })
