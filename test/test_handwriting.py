@@ -1,11 +1,14 @@
 import base64
 import importlib.util
 import io
+import hashlib
 import json
 from pathlib import Path
 import tempfile
 import threading
+from types import SimpleNamespace
 import unittest
+from unittest.mock import patch
 from http.client import HTTPConnection
 from urllib.request import Request, urlopen
 from urllib.error import HTTPError
@@ -57,18 +60,19 @@ class HandwritingServiceTests(unittest.TestCase):
         self.thread.join()
         self.temp.cleanup()
 
-    def request(self, path, data=None, headers=None):
+    def request(self, path, data=None, headers=None, method=None, return_headers=False):
         headers = headers or {}
         if data is not None:
             headers.setdefault('Content-Type', 'application/json')
             data = json.dumps(data).encode()
-        req = Request(self.url + path, data=data, headers=headers)
+        req = Request(self.url + path, data=data, headers=headers, method=method)
         try:
             response = urlopen(req, timeout=3)
         except HTTPError as error:
             response = error
         with response:
-            return response.status, response.read()
+            result = response.status, response.read()
+            return (*result, dict(response.headers)) if return_headers else result
 
     def test_serves_only_board_and_health(self):
         self.assertEqual(self.request('/anatomy.html')[0], 200)
@@ -94,6 +98,154 @@ class HandwritingServiceTests(unittest.TestCase):
         self.engine.initializing = False
         self.engine.error = '模型不可用'
         self.assertFalse(json.loads(self.request('/api/health')[1])['ready'])
+
+    def test_health_reports_local_and_real_agent_handoff_and_public_health_has_no_paths(self):
+        result = json.loads(self.request('/api/health')[1])
+        self.assertTrue(result['providers']['local']['ready'])
+        self.assertEqual(result['providers']['agent'], {'available': True, 'mode': 'handoff', 'status': '等待宿主智能体接管'})
+        self.assertEqual(result['serviceVersion'], module.SERVICE_VERSION)
+        self.assertEqual(result['serviceHash'], module.SERVICE_HASH)
+        self.assertEqual(result['pluginVersion'], module.PLUGIN_VERSION)
+        self.engine.error = 'model failed under ' + self.temp.name
+        status, body, headers = self.request('/api/recognition/health', headers={'Origin': 'http://localhost:5173'}, return_headers=True)
+        result = json.loads(body)
+        self.assertEqual(status, 200)
+        self.assertEqual(headers['Access-Control-Allow-Origin'], 'http://localhost:5173')
+        self.assertFalse(result['ready'])
+        self.assertNotIn('boardFile', result)
+        self.assertNotIn('pid', result)
+        self.assertNotIn(self.temp.name.encode(), body)
+
+    def test_agent_configuration_health_uses_startup_hash_without_exposing_config_path(self):
+        config = Path(self.temp.name) / 'agent-private.json'
+        config.write_text(json.dumps({'engine': 'dsh', 'command': 'configured-runner'}))
+        expected = hashlib.sha256(config.read_bytes()).hexdigest()
+        with patch.dict(module.os.environ, {'ANATOMY_RECOGNITION_AGENT_CONFIG': str(config)}):
+            server, _ = module.make_server(Path(self.temp.name) / 'anatomy.html', 0, self.engine)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            config.write_text('{}')
+            with urlopen('http://127.0.0.1:%d/api/health' % server.server_port, timeout=3) as response:
+                raw = response.read()
+            result = json.loads(raw)
+            self.assertEqual(result['agentConfigurationHash'], expected)
+            self.assertEqual(result['providers']['agent']['mode'], 'executor')
+            self.assertNotIn(str(config).encode(), raw)
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join()
+
+    def test_manual_loopback_and_file_connections_bind_token_to_origin_and_reuse_ocr(self):
+        for origin in ['http://127.0.0.1:5173', 'http://localhost:8765', 'http://[::1]:5173', 'null']:
+            status, body, headers = self.request('/api/recognition/connect', {}, {'Origin': origin}, return_headers=True)
+            connected = json.loads(body)
+            self.assertEqual(status, 200)
+            self.assertTrue(connected['ready'])
+            self.assertEqual(connected['service'], 'anatomy-handwriting')
+            self.assertEqual(set(connected['modes']), {'text', 'math'})
+            self.assertGreater(connected['expiresAt'], 0)
+            self.assertEqual(headers['Access-Control-Allow-Origin'], origin)
+            token_headers = {'Origin': origin, 'X-Anatomy-Recognition-Token': connected['token']}
+            status, body, headers = self.request('/api/recognition/local', {'mode': 'text', 'image': image_data()}, token_headers, return_headers=True)
+            self.assertEqual(status, 200)
+            self.assertEqual(json.loads(body)['text'], '接收输入')
+            self.assertEqual(headers['Access-Control-Allow-Origin'], origin)
+            changed_origin = 'http://localhost:9999' if origin != 'http://localhost:9999' else 'null'
+            self.assertEqual(self.request('/api/recognition/local', {'mode': 'text', 'image': image_data()}, {'Origin': changed_origin, 'X-Anatomy-Recognition-Token': connected['token']})[0], 403)
+        self.assertEqual(len(self.engine.calls), 4)
+        self.assertEqual(self.request('/api/recognition/local', {'mode': 'text', 'image': image_data()}, {'Origin': 'null'})[0], 403)
+
+    def test_manual_tokens_expire_and_session_count_is_bounded(self):
+        origin = 'http://localhost:5173'
+        with patch.object(module.time, 'time', return_value=1000):
+            token = json.loads(self.request('/api/recognition/connect', {}, {'Origin': origin})[1])['token']
+        with patch.object(module.time, 'time', return_value=1000 + module.RECOGNITION_TOKEN_TTL):
+            self.assertEqual(self.request('/api/recognition/local', {'mode': 'text', 'image': image_data()}, {'Origin': origin, 'X-Anatomy-Recognition-Token': token})[0], 403)
+            for _ in range(module.MAX_RECOGNITION_SESSIONS):
+                self.assertEqual(self.request('/api/recognition/connect', {}, {'Origin': origin})[0], 200)
+            self.assertEqual(self.request('/api/recognition/connect', {}, {'Origin': origin})[0], 429)
+        with patch.object(module.time, 'time', return_value=1000 + 2 * module.RECOGNITION_TOKEN_TTL):
+            self.assertEqual(self.request('/api/recognition/connect', {}, {'Origin': origin})[0], 200)
+        self.assertFalse(self.engine.calls)
+
+    def test_manual_origins_reject_external_userinfo_paths_and_invalid_ports(self):
+        bad_origins = ['https://outside.example', 'http://outside.example', 'https://localhost:5173',
+                       'http://127.0.0.1.evil.example:5173', 'http://localhost@outside.example',
+                       'http://outside.example@localhost:5173', 'http://localhost:5173/',
+                       'http://localhost:5173/path', 'http://localhost:5173?x=1',
+                       'http://localhost:5173#fragment', 'http://localhost:65536', 'http://localhost:0',
+                       'http://127.1:5173', 'http://[::ffff:127.0.0.1]:5173']
+        for origin in bad_origins:
+            self.assertEqual(self.request('/api/recognition/health', headers={'Origin': origin})[0], 403, origin)
+            self.assertEqual(self.request('/api/recognition/connect', {}, {'Origin': origin})[0], 403, origin)
+        self.assertEqual(self.request('/api/recognition/health', headers={'Host': 'outside.example', 'Origin': 'null'})[0], 403)
+        self.assertFalse(self.engine.calls)
+
+    def test_cors_preflight_is_limited_to_manual_recognition_routes(self):
+        origin = 'http://localhost:5173'
+        for path, method in [('/api/recognition/health', 'GET'), ('/api/recognition/connect', 'POST'), ('/api/recognition/local', 'POST')]:
+            status, _, headers = self.request(path, headers={'Origin': origin, 'Access-Control-Request-Method': method,
+                                                         'Access-Control-Request-Headers': 'Content-Type, X-Anatomy-Recognition-Token'}, method='OPTIONS', return_headers=True)
+            self.assertEqual(status, 204)
+            self.assertEqual(headers['Access-Control-Allow-Origin'], origin)
+            self.assertEqual(headers['Access-Control-Allow-Methods'], method)
+            self.assertIn('X-Anatomy-Recognition-Token', headers['Access-Control-Allow-Headers'])
+        for path in ['/api/versions', '/api/versions/select', '/api/recognition/agent', '/api/recognize', '/api/settings']:
+            status, _, headers = self.request(path, headers={'Origin': origin, 'Access-Control-Request-Method': 'POST'}, method='OPTIONS', return_headers=True)
+            self.assertEqual(status, 403)
+            self.assertNotIn('Access-Control-Allow-Origin', headers)
+        self.assertEqual(self.request('/api/recognition/local', headers={'Origin': origin, 'Access-Control-Request-Method': 'DELETE'}, method='OPTIONS')[0], 403)
+        self.assertEqual(self.request('/api/recognition/local', headers={'Origin': origin, 'Access-Control-Request-Method': 'POST', 'Access-Control-Request-Headers': 'Authorization'}, method='OPTIONS')[0], 403)
+        self.assertEqual(self.request('/api/recognition/connect', headers={'Origin': 'https://outside.example', 'Access-Control-Request-Method': 'POST'}, method='OPTIONS')[0], 403)
+        for local_origin in [origin, 'null']:
+            self.assertEqual(self.request('/api/versions', headers={'Origin': local_origin})[0], 403)
+            self.assertEqual(self.request('/api/versions', {}, {'Origin': local_origin})[0], 403)
+            self.assertEqual(self.request('/api/recognition/agent', {}, {'Origin': local_origin})[0], 403)
+            self.assertEqual(self.request('/api/recognize', {'mode': 'text', 'image': image_data()}, {'Origin': local_origin})[0], 403)
+
+    def test_agent_request_read_cancel_bridge_keeps_images_out_of_web_responses(self):
+        actions = []
+        def bridge(argv, **kwargs):
+            payload = json.loads(kwargs['input'])
+            actions.append(payload)
+            self.assertEqual(argv[-2], str(module.ROOT / 'scripts' / 'recognition-api.mjs'))
+            self.assertEqual(argv[-1], self.temp.name)
+            action = payload['action']
+            if action == 'create':
+                result = {'ok': True, 'request': {'id': 'request-123', 'status': 'pending', 'mode': payload['payload']['mode'], 'image': payload['payload']['image']}}
+                return SimpleNamespace(returncode=0, stderr='', stdout=json.dumps({'status': 202, 'result': result}))
+            result = {'ok': True, 'request': {'id': payload['payload']['id'], 'status': 'cancelled' if action == 'cancel' else 'completed',
+                                            'result': {'text': '接收输入', 'engine': 'host-agent', 'mode': 'text'}, 'image': image_data(), 'sourceElements': ['part']}}
+            return SimpleNamespace(returncode=0, stderr='', stdout=json.dumps({'status': 200, 'result': result}))
+        with patch.object(module.subprocess, 'run', side_effect=bridge):
+            payload = {'mode': 'text', 'image': image_data(), 'selectionRevision': 'selected-1', 'sourceRevision': 'source-1', 'sourceElements': ['part'], 'id': 'request-123'}
+            status, body = self.request('/api/recognition/agent', payload)
+            self.assertEqual(status, 202)
+            self.assertNotIn('image', json.loads(body)['request'])
+            status, body = self.request('/api/recognition/agent/request-123')
+            self.assertEqual(status, 200)
+            self.assertEqual(json.loads(body)['request']['result']['text'], '接收输入')
+            self.assertNotIn('image', json.loads(body)['request'])
+            self.assertEqual(self.request('/api/recognition/agent/request-123/cancel', {})[0], 200)
+            self.assertEqual([item['action'] for item in actions], ['create', 'read', 'cancel'])
+            self.assertEqual(actions[0]['payload'], payload)
+            self.assertEqual(actions[1]['payload'], {'id': 'request-123'})
+            self.assertEqual(actions[2]['payload'], {'id': 'request-123'})
+            self.assertEqual(self.request('/api/recognition/agent/request-123', headers={'Origin': 'http://localhost:5173'})[0], 403)
+            self.assertEqual(self.request('/api/recognition/agent/request-123/cancel', {}, {'Origin': 'null'})[0], 403)
+        self.assertFalse(self.engine.calls)
+
+    def test_agent_bridge_failure_is_reported_without_claiming_recognition(self):
+        with patch.object(module.subprocess, 'run', side_effect=OSError('runner absent at private path')):
+            status, raw = self.request('/api/recognition/agent', {'mode': 'text', 'image': image_data()})
+            self.assertEqual(status, 503)
+            result = json.loads(raw)
+            self.assertFalse(result['ok'])
+            self.assertEqual(result['error']['code'], 'recognition/service')
+            self.assertNotIn(b'private path', raw)
+        self.assertFalse(self.engine.calls)
 
     def test_project_versions_save_select_conflicts_and_local_boundary(self):
         project = Path(self.temp.name)

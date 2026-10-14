@@ -42,6 +42,8 @@ function runtime(options = {}) {
   }
   const html = renderAnatomy({ slug: 'math-client', title: '图形公式回归', board: options.board || fixture() }, [], [])
   vm.runInNewContext(html.match(/<script>([\s\S]*)<\/script>/)[1], context)
+  // These older model-boundary tests explicitly exercise the legacy local API.
+  vm.runInNewContext("inkProvider='local';$('ink-provider').value='local';inkLocalConnection={origin:'',legacy:true,connected:true};updateInkProviderControls()", context)
   // Only replace the external SVG-to-pixels boundary; board validation, source
   // comparison, lasso clipping, history and recognition routing remain real.
   context.rasterFormula = options.raster || (async () => raster())

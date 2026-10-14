@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Serve one Anatomy board and local Chinese/formula handwriting recognition.
-No user image is sent to a remote service or saved to disk. Model weights are
-obtained by PaddleOCR on first use; --warmup downloads/loads them at startup.
+"""Serve one Anatomy board, local OCR, and explicit host-agent handoffs.
+Local OCR images stay in memory; agent handoffs use the project request queue.
+PaddleOCR obtains model weights on first use; --warmup loads them at startup.
 """
 import argparse
 import errno
@@ -9,19 +9,23 @@ import uuid
 import base64
 import binascii
 import io
+import hashlib
 import json
 import os
 from pathlib import Path
+import re
+import secrets
 import sys
 import threading
 import subprocess
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlsplit
 
 ROOT = Path(__file__).resolve().parent.parent
 # Optional project-local compatibility dependencies; never modify global Python.
 LOCAL_DEPS = ROOT / '.cache' / 'ocr-deps'
-if LOCAL_DEPS.is_dir():
+if os.environ.get('ANATOMY_MANAGED_OCR_ENV') != '1' and LOCAL_DEPS.is_dir():
     sys.path.insert(0, str(LOCAL_DEPS))
 os.environ.setdefault('PADDLE_PDX_CACHE_HOME', str(ROOT / '.cache' / 'paddlex'))
 os.environ.setdefault('PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK', 'True')
@@ -29,6 +33,31 @@ os.environ.setdefault('PADDLE_PDX_MODEL_SOURCE', 'BOS')
 os.environ.setdefault('FLAGS_use_mkldnn', '0')
 MAX_BODY = 4 * 1024 * 1024
 MAX_VERSION_BODY = 12 * 1024 * 1024
+SERVICE_VERSION = 3
+SERVICE_HASH = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
+RECOGNITION_TOKEN_TTL = 600
+MAX_RECOGNITION_SESSIONS = 32
+MANUAL_RECOGNITION_PATHS = {'/api/recognition/health', '/api/recognition/connect', '/api/recognition/local'}
+LOOPBACK_ORIGIN = re.compile(r'^http://(?:127\.0\.0\.1|localhost|\[::1\])(?::([1-9][0-9]{0,4}))?$')
+try:
+    PLUGIN_VERSION = json.loads((ROOT / 'package.json').read_text(encoding='utf-8'))['version']
+except (OSError, ValueError, KeyError):
+    PLUGIN_VERSION = 'unknown'
+
+
+def valid_recognition_origin(origin):
+    if origin is None or origin == 'null':
+        return True
+    match = LOOPBACK_ORIGIN.fullmatch(origin)
+    return bool(match and (match.group(1) is None or int(match.group(1)) <= 65535))
+
+
+def without_job_images(value):
+    if isinstance(value, dict):
+        return {key: without_job_images(item) for key, item in value.items() if key not in ('image', 'imageData', 'imageSrc')}
+    if isinstance(value, list):
+        return [without_job_images(item) for item in value]
+    return value
 
 
 def decode_image(data):
@@ -111,6 +140,13 @@ def make_server(board_file, port, engine=None, instance_id=None):
     board_file = Path(board_file).resolve()
     engine = engine or RecognitionEngine()
     instance_id = instance_id or str(uuid.uuid4())
+    recognition_sessions = {}
+    recognition_sessions_lock = threading.Lock()
+    agent_config = os.environ.get('ANATOMY_RECOGNITION_AGENT_CONFIG')
+    try:
+        agent_configuration_hash = hashlib.sha256(Path(agent_config).read_bytes()).hexdigest() if agent_config else None
+    except OSError:
+        agent_configuration_hash = None
 
     class Handler(BaseHTTPRequestHandler):
         def versions(self, action, payload=None):
@@ -124,11 +160,72 @@ def make_server(board_file, port, engine=None, instance_id=None):
             except Exception as error:
                 return self.send(503, dict(ok=False, error=dict(code='version/service', message='项目版本服务不可用：' + str(error))))
 
+        def agent_recognition(self, action, payload=None):
+            try:
+                result = subprocess.run([os.environ.get('ANATOMY_NODE', 'node'), str(ROOT / 'scripts' / 'recognition-api.mjs'), str(board_file.parent)],
+                                        input=json.dumps(dict(action=action, payload=payload or {})), text=True, capture_output=True, timeout=20)
+                if result.returncode:
+                    raise RuntimeError(result.stderr[-1000:])
+                data = json.loads(result.stdout)
+                return self.send(data['status'], without_job_images(data['result']))
+            except Exception:
+                return self.send(503, dict(ok=False, error=dict(code='recognition/service', message='智能体识别交接服务暂不可用，请稍后重试。')))
+
+        def host_allowed(self):
+            return self.headers.get('Host', '') in {'127.0.0.1:' + str(self.server.server_port), 'localhost:' + str(self.server.server_port), '[::1]:' + str(self.server.server_port)}
+
         def allowed(self):
             host = self.headers.get('Host', '')
-            allowed = {'127.0.0.1:' + str(self.server.server_port), 'localhost:' + str(self.server.server_port)}
+            allowed = {'127.0.0.1:' + str(self.server.server_port), 'localhost:' + str(self.server.server_port), '[::1]:' + str(self.server.server_port)}
             origin = self.headers.get('Origin')
             return host in allowed and (not origin or origin in {'http://' + h for h in allowed})
+
+        def manual_allowed(self):
+            origin = self.headers.get('Origin')
+            if not self.host_allowed() or not valid_recognition_origin(origin):
+                return False
+            self.recognition_cors_origin = origin
+            return True
+
+        def health(self, manual=False):
+            ready = len(engine.models) == 2 and not engine.error and not getattr(engine, 'initializing', False)
+            error = ('本地识别模型尚未就绪。' if engine.error else None) if manual else engine.error
+            data = dict(service='anatomy-handwriting', protocol=2, serviceVersion=SERVICE_VERSION, serviceHash=SERVICE_HASH, pluginVersion=PLUGIN_VERSION,
+                        agentConfigurationHash=agent_configuration_hash,
+                        capabilities=['project-versions', 'manual-recognition', 'agent-recognition'], ready=ready,
+                        modes=list(engine.models), status=engine.status, error=error,
+                        providers=dict(local=dict(available=True, ready=ready, modes=list(engine.models), status=engine.status, error=error),
+                                       agent=dict(available=True, mode='executor' if agent_config else 'handoff',
+                                                  status='独立执行器已配置' if agent_config else '等待宿主智能体接管')))
+            if not manual:
+                data.update(boardFile=str(board_file), instanceId=instance_id, pid=os.getpid())
+            return data
+
+        def connect_recognition(self):
+            now = time.time()
+            with recognition_sessions_lock:
+                expired = [token for token, session in recognition_sessions.items() if session['expires'] <= now]
+                for token in expired:
+                    recognition_sessions.pop(token, None)
+                if len(recognition_sessions) >= MAX_RECOGNITION_SESSIONS:
+                    return self.send(429, dict(ok=False, error='识别连接已达上限，请稍后重试。'))
+                token = secrets.token_urlsafe(32)
+                expires = now + RECOGNITION_TOKEN_TTL
+                recognition_sessions[token] = dict(origin=self.headers.get('Origin'), expires=expires)
+            state = self.health(manual=True)
+            return self.send(200, dict(ok=True, token=token, expiresAt=int(expires * 1000), service=state['service'],
+                                       ready=state['ready'], modes=state['modes'], pluginVersion=PLUGIN_VERSION, serviceVersion=SERVICE_VERSION))
+
+        def recognition_token_valid(self):
+            token = self.headers.get('X-Anatomy-Recognition-Token', '')
+            with recognition_sessions_lock:
+                session = recognition_sessions.get(token)
+                if not session:
+                    return False
+                if session['expires'] <= time.time():
+                    recognition_sessions.pop(token, None)
+                    return False
+                return session['origin'] == self.headers.get('Origin')
 
         def send(self, status, data, content_type='application/json; charset=utf-8'):
             encoded = json.dumps(data, ensure_ascii=False).encode('utf-8') if isinstance(data, dict) else data
@@ -137,20 +234,51 @@ def make_server(board_file, port, engine=None, instance_id=None):
             self.send_header('Content-Length', str(len(encoded)))
             self.send_header('Cache-Control', 'no-store')
             self.send_header('X-Content-Type-Options', 'nosniff')
+            origin = getattr(self, 'recognition_cors_origin', None)
+            if origin is not None:
+                self.send_header('Access-Control-Allow-Origin', origin)
+                self.send_header('Vary', 'Origin')
             self.end_headers()
             try:
                 self.wfile.write(encoded)
             except (BrokenPipeError, ConnectionResetError):
                 pass
 
+        def do_OPTIONS(self):
+            path = urlsplit(self.path).path
+            if path not in MANUAL_RECOGNITION_PATHS:
+                return self.send(403, dict(ok=False, error='这个接口不允许跨源连接。'))
+            if not self.manual_allowed():
+                return self.send(403, dict(ok=False, error='仅允许本机画板连接识别。'))
+            method = self.headers.get('Access-Control-Request-Method')
+            expected = 'GET' if path == '/api/recognition/health' else 'POST'
+            headers = {value.strip().lower() for value in self.headers.get('Access-Control-Request-Headers', '').split(',') if value.strip()}
+            if method != expected or not headers <= {'content-type', 'x-anatomy-recognition-token'}:
+                return self.send(403, dict(ok=False, error='识别连接的预检请求无效。'))
+            self.send_response(204)
+            if self.headers.get('Origin') is not None:
+                self.send_header('Access-Control-Allow-Origin', self.headers['Origin'])
+            self.send_header('Vary', 'Origin')
+            self.send_header('Access-Control-Allow-Methods', expected)
+            self.send_header('Access-Control-Allow-Headers', 'Content-Type, X-Anatomy-Recognition-Token')
+            self.send_header('Access-Control-Max-Age', '600')
+            self.send_header('Cache-Control', 'no-store')
+            self.send_header('Content-Length', '0')
+            self.end_headers()
+
         def do_GET(self):
+            path = urlsplit(self.path).path
+            if path == '/api/recognition/health':
+                if not self.manual_allowed():
+                    return self.send(403, dict(ok=False, error='仅允许本机画板连接识别。'))
+                return self.send(200, self.health(manual=True))
             if not self.allowed():
                 return self.send(403, dict(ok=False, error='仅允许从本地画板使用。'))
-            path = urlsplit(self.path).path
             if path == '/api/health':
-                return self.send(200, dict(service='anatomy-handwriting', protocol=2, capabilities=['project-versions'], boardFile=str(board_file), instanceId=instance_id, pid=os.getpid(),
-                                          ready=len(engine.models) == 2 and not engine.error and not getattr(engine, 'initializing', False),
-                                          modes=list(engine.models), status=engine.status, error=engine.error))
+                return self.send(200, self.health())
+            agent = re.fullmatch(r'/api/recognition/agent/([A-Za-z0-9_-]{1,128})', path)
+            if agent:
+                return self.agent_recognition('read', dict(id=agent.group(1)))
             if path == '/api/versions':
                 return self.versions('list')
             if path == '/api/versions/current':
@@ -163,26 +291,37 @@ def make_server(board_file, port, engine=None, instance_id=None):
             self.send(404, dict(ok=False, error='没有这个资源。'))
 
         def do_POST(self):
-            if not self.allowed():
+            path = urlsplit(self.path).path
+            manual = path in {'/api/recognition/connect', '/api/recognition/local'}
+            if not (self.manual_allowed() if manual else self.allowed()):
                 return self.send(403, dict(ok=False, error='仅允许从本地画板使用。'))
-            if self.path not in ('/api/recognize', '/api/versions', '/api/versions/select'):
+            agent_cancel = re.fullmatch(r'/api/recognition/agent/([A-Za-z0-9_-]{1,128})/cancel', path)
+            if path not in ('/api/recognize', '/api/versions', '/api/versions/select', '/api/recognition/connect', '/api/recognition/local', '/api/recognition/agent') and not agent_cancel:
                 return self.send(404, dict(ok=False, error='没有这个接口。'))
+            if path == '/api/recognition/local' and not self.recognition_token_valid():
+                return self.send(403, dict(ok=False, error='识别连接已失效，请重新连接本地服务。'))
             if self.headers.get_content_type() != 'application/json':
                 return self.send(415, dict(ok=False, error='请求需要 JSON。'))
             try:
                 length = int(self.headers.get('Content-Length', 0))
-                limit = MAX_BODY if self.path == '/api/recognize' else MAX_VERSION_BODY
+                limit = MAX_VERSION_BODY if path in ('/api/versions', '/api/versions/select') else MAX_BODY
                 if length <= 0:
                     raise ValueError('请求数据为空。')
                 if length > limit:
-                    return self.send(413, dict(ok=False, error='笔迹请求不能超过 4 MiB。' if self.path == '/api/recognize' else '画板请求不能超过 12 MiB。'))
+                    return self.send(413, dict(ok=False, error='笔迹请求不能超过 4 MiB。' if limit == MAX_BODY else '画板请求不能超过 12 MiB。'))
                 self.connection.settimeout(15)
                 payload = json.loads(self.rfile.read(length))
-                if self.path != '/api/recognize':
-                    if not isinstance(payload, dict):
-                        raise ValueError('请求需要 JSON 对象。')
-                    return self.versions('save' if self.path == '/api/versions' else 'select', payload)
-                if not isinstance(payload, dict) or payload.get('mode') not in ('text', 'math'):
+                if not isinstance(payload, dict):
+                    raise ValueError('请求需要 JSON 对象。')
+                if path == '/api/recognition/connect':
+                    return self.connect_recognition()
+                if path in ('/api/versions', '/api/versions/select'):
+                    return self.versions('save' if path == '/api/versions' else 'select', payload)
+                if agent_cancel:
+                    return self.agent_recognition('cancel', dict(id=agent_cancel.group(1)))
+                if path == '/api/recognition/agent':
+                    return self.agent_recognition('create', payload)
+                if payload.get('mode') not in ('text', 'math'):
                     raise ValueError('请选择中文说明或数学公式。')
                 image = decode_image(payload.get('image'))
             except Exception as error:

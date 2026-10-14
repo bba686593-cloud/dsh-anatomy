@@ -2,7 +2,7 @@
 
 **自由二维工程画板：用图形、原笔迹、自然语言和数学描述工程，逐个对象绘制、擦除、变形并关联实现。**
 
-当前版本 **0.16.3**：[更新说明与升级步骤](docs/RELEASE-0.16.3.md) · [更新记录](CHANGELOG.md)。已有画板、图片和项目保存历史继续兼容。
+当前版本 **0.17.0**：[识别接入、安装与升级](docs/RELEASE-0.17.0.md) · [更新记录](CHANGELOG.md)。已有画板、图片和项目保存历史继续兼容。
 
 用图形、原笔迹、自然语言、数学关系和图片自由绘制工程。每个对象都可独立移动和编辑，左侧快捷栏帮助插入内容；明确打开「程序映射」，再查看和编辑这个部位的程序表达与源码关联。
 
@@ -71,17 +71,20 @@
 
 用鼠标、触控笔或触摸直接写在大画板上。没有圈选时，点击左侧「识别」先进入套索；圈选完成后再次点击「识别」选择类型，选定后自动识别，无需再点「识别笔迹」。取消类型选择会保留圈选与原稿。中文结果可用自然语言校对，数学结果以公式图形预览，识别不符时回画板调整笔迹并重新识别。中文建议每次写一行，数学一次写一条完整公式。连接状态自动更新，也可点击「重新连接」。未确认识别草稿在当前浏览器暂存，重开相同区域时可恢复；确认后才替换圈内内容并进入撤销与项目保存。
 
-手写识别通过本机 Python 服务完成，分别使用 [PP-OCRv5 中文识别](https://www.paddleocr.ai/v3.0.0/en/version3.x/algorithm/PP-OCRv5/PP-OCRv5.html) 与 [PP-FormulaNet 公式识别](https://www.paddleocr.ai/v3.1.1/en/version3.x/module_usage/formula_recognition.html)。识别是候选结果，复杂笔迹、上下标和汉字仍需校对。
+识别面板可选择「智能体」或「本地识别服务」。智能体模式通过 `anatomy_recognition` 将圈选 PNG 交给 DSH 或 Codex，并将候选回传网页；未配置独立执行器时显示等待接管，需要在宿主会话要求接管，网页不会自行唤醒空闲会话。可配置已登录的 Codex CLI 自动执行，或使用明确配置的 DSH 命令适配器，见 [接入说明](docs/RELEASE-0.17.0.md)。智能体模式会按宿主配置处理图片，包括其模型服务。
+
+本地模式分别使用 [PP-OCRv5 中文识别](https://www.paddleocr.ai/v3.0.0/en/version3.x/algorithm/PP-OCRv5/PP-OCRv5.html) 与 [PP-FormulaNet 公式识别](https://www.paddleocr.ai/v3.1.1/en/version3.x/module_usage/formula_recognition.html)。在网页填入本机服务地址并点击「连接」，可连接另一端口的本地服务，也可从独立 HTML 手动连接；项目版本保存仍由原画板服务负责。识别是候选结果，复杂笔迹、上下标和汉字仍需校对。
 
 调用 `anatomy_render` 时默认自动启动或复用本地服务，并请求系统浏览器打开返回的 `url`。网页先打开，中文与公式模型在后台准备，手写面板显示实际加载状态。同一画板重复生成复用同一服务；默认端口 8767 被其他页面占用时自动选择空闲端口，不会关闭已有服务。自定义输出文件名也支持。
 
-首次使用需要安装 Python 和可选识别依赖（不会自动修改 Python 环境）：
+识别服务程序、安装器和固定依赖清单随插件发布与更新；Python、识别依赖和模型权重需要在每台电脑准备。已有 Python 3.8+ 时，在插件目录执行：
 
 ```bash
-python3 -m pip install -r scripts/requirements-ocr.txt
+npm run recognition:install
+npm run recognition:warmup
 ```
 
-依赖建议装在独立 Python 环境，并把插件配置的 `pythonPath` 设为该环境的 Python 可执行文件路径。首次识别需要下载公开模型权重；之后从本地缓存加载。依赖缺失或加载失败时，画板仍可打开，面板会显示原因；修好依赖后重试识别。
+安装器建立用户缓存里的独立 Python 环境，不修改全局 Python；渲染时自动使用它，也可显式配置 `pythonPath`。`npm run recognition:check` 检查环境与依赖版本，更新插件后执行 `npm run recognition:update`；依赖清单没有变化时复用环境，模型缓存持续保留。`-- --python /路径/python` 可指定已有 Python。首次模型准备下载公开权重，换电脑需要重新安装依赖并下载，不能跨操作系统复制虚拟环境。未安装 Python 或当前系统没有兼容的 Paddle wheel 时会报告具体错误，插件不捆绑所有平台的 Python 与模型。
 
 - `anatomy_render({ body: 'project', open: false })`：启动服务，只返回地址。
 - `anatomy_render({ body: 'project', serve: false })`：只生成 HTML。
@@ -90,7 +93,7 @@ python3 -m pip install -r scripts/requirements-ocr.txt
 
 直接双击独立 HTML 或使用普通静态服务器时，绘图与公式可用，但浏览器不能自行启动 Python。需要手动启动时，从插件目录运行 `npm run serve -- --dir anatomy-freeboard --port 8767 --warmup`，或用 `--file /路径/自定义画板.html` 指定文件，再打开服务打印的地址。
 
-服务只监听本机回环地址，仅提供指定画板、项目版本和识别接口；不会开放整个工程目录。识别请求只在本机处理，服务端不保存笔迹图像；未确认的草稿仍由浏览器暂存。服务独立于生成命令运行，关闭网页不会停止它。画板目录内的 `.anatomy-runtime/` 保存地址、进程标识和日志，勿提交版本库；要停止服务，可核实返回的 `service.pid` 对应本画板后结束该进程。
+服务只监听本机回环地址，仅提供指定画板、项目版本和识别接口；不会开放整个工程目录。手动连接使用绑定网页来源的短期 token，跨来源只开放本地识别接口。智能体交接图片与请求保存在画板目录的 `.anatomy-runtime/recognition/requests/`，用于宿主读取和回传；请求 10 分钟后过期，关闭或改稿会取消，历史请求文件保留供核对，勿提交版本库。服务独立于生成命令运行，关闭网页不会停止它。更新后生成画板会核验代码版本，安全重启归属当前画板的旧服务；无法核验身份时报告原因。要停止服务，可核实返回的 `service.pid` 对应本画板后结束该进程。
 
 `npm run test:ocr` 测试服务输入校验、中文/公式分流、模型结果解析和本地访问边界；`python3 test/recognition-smoke.py http://127.0.0.1:8767` 可用合成笔迹检查实际模型对“中文”和带上标公式的识别通路；它不代表复杂手写的准确率。
 

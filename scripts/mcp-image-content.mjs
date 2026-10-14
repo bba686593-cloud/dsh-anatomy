@@ -6,6 +6,16 @@ import { programTrace } from '../lib/semantics.js'
 // Inspect the returned current board, never scan files or historical versions.
 export function mcpToolResult(name, value) {
   const structuredContent=typeof value==='object'&&value!==null?value:{value}
+  if(name==='anatomy_recognition'){
+    const content=[{type:'text',text:JSON.stringify(value,(key,next)=>key==='src'?'[圈选 PNG 见附加图片]':next)}]
+    if(value?.ok&&value.image?.src){
+      try{
+        const parsed=parseImageSource(value.image.src),data=value.image.src.slice(value.image.src.indexOf(',')+1),hash=createHash('sha256').update(Buffer.from(data,'base64')).digest('hex')
+        if(parsed.mime==='image/png'&&hash===value.request?.imageHash&&hash===value.image.sha256)content.push({type:'image',data,mimeType:parsed.mime})
+      }catch{}
+    }
+    return{content,structuredContent,isError:value?.ok===false}
+  }
   if(!['anatomy_selected_version','anatomy_board','anatomy_digest'].includes(name)||!value||typeof value!=='object')return{content:[{type:'text',text:JSON.stringify(value)}],structuredContent,isError:value?.ok===false}
   let elements=name==='anatomy_selected_version'?value.version?.board?.elements:name==='anatomy_board'?value.board?.elements:[],digestLines
   if(name==='anatomy_digest'&&typeof value.text==='string'){
