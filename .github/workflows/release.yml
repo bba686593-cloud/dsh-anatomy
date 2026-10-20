@@ -1,7 +1,8 @@
-name: Release
+name: Test and release
 
 on:
   push:
+    branches: ['main']
     tags: ['v*']
 
 permissions:
@@ -31,7 +32,7 @@ jobs:
           import { readFileSync, writeFileSync } from 'node:fs';
           const version = JSON.parse(readFileSync('package.json')).version;
           const plugin = JSON.parse(readFileSync('.codex-plugin/plugin.json'));
-          if (process.env.GITHUB_REF_NAME !== 'v' + version || plugin.version !== version) throw Error('Release versions do not match');
+          if (plugin.version !== version || process.env.GITHUB_REF_TYPE === 'tag' && process.env.GITHUB_REF_NAME !== 'v' + version) throw Error('Release versions do not match');
           const notes = readFileSync('CHANGELOG.md', 'utf8').split(/^## /m).find(section => section.startsWith(version + ' '));
           if (!notes) throw Error('Release notes are missing');
           const base = process.env.GITHUB_SERVER_URL + '/' + process.env.GITHUB_REPOSITORY + '/blob/' + process.env.GITHUB_REF_NAME + '/';
@@ -42,12 +43,23 @@ jobs:
           npm test
           python3 native/selftest.py
       - name: Test real WebGL editing
+        id: webgl
         run: |
+          exec > >(tee "$RUNNER_TEMP/webgl.log") 2>&1
           npm install --prefix "$RUNNER_TEMP/browser-tests" --no-save --package-lock=false playwright@1.62.1
           "$RUNNER_TEMP/browser-tests/node_modules/.bin/playwright" install --with-deps chromium
           export ANATOMY_PLAYWRIGHT_MODULE="$RUNNER_TEMP/browser-tests/node_modules/playwright/index.mjs"
           npm run test:space:browser
+      - name: Report WebGL failure
+        if: failure() && steps.webgl.outcome == 'failure'
+        run: |
+          node <<'NODE'
+          const log = require('node:fs').readFileSync(process.env.RUNNER_TEMP + '/webgl.log', 'utf8');
+          const detail = log.split('\n').slice(-75).join('\n').replace(/%/g, '%25').replace(/\r/g, '%0D').replace(/\n/g, '%0A');
+          console.log('::error title=WebGL check failed::' + detail);
+          NODE
       - name: Package and publish GitHub release
+        if: startsWith(github.ref, 'refs/tags/')
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
