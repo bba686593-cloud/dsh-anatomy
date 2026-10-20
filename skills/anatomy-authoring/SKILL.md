@@ -17,7 +17,7 @@ description: 用共用数据的二维画板与 GPU 三维视图描述和管理�
 - 新画板用 `anatomy_init({ repo, body, title, oneline })`，数据放在工程自己的 `anatomy-<slug>/`。不传系统即可从空画板开始。
 - 用 `anatomy_board` 读取完整画板，修改后保存整张 `board`，保留其他图元、稳定标识、原始图与笔迹、源码指纹和扩展字段。待应用的人保存版本以 `anatomy_selected_version` 返回的完整快照为准。
 - 用 `anatomy_check` 检查结构、人读语言与源码证据；修正错误后 `anatomy_render` 生成画板。默认启动或复用本地服务并请求打开网页，实际检查返回的 `url`。只生成文件可用 `serve: false`，只返回地址可用 `open: false`。
-- `anatomy_map`、`anatomy_digest` 生成两种阅读深度；`anatomy_board({ dir, element })` 读取具体部位的完整程序映射。数据例子和服务设置见 [README](../../README.md)。
+- `anatomy_map`、`anatomy_digest` 生成两种阅读深度；`anatomy_board({ dir, element })` 读取具体部位的完整程序映射。数据例子和服务设置见 [使用与开发参考](../../docs/REFERENCE.md)。
 
 ## 画板操作
 
@@ -112,4 +112,4 @@ description: 用共用数据的二维画板与 GPU 三维视图描述和管理�
 
 页面驱动的流程若遇到画板服务不在（宿主重启、进程崩溃、没登录），带 `url` 或 `dir` 的工具会就地拉起；也可以直接调 `anatomy_service({dir, action:'start'})`，`status` 只报告不启动。
 
-更新到 0.20.3 后重新开启会话或重启 Anatomy MCP 连接，再用 `anatomy_render` 重新生成并打开画板。已有 `body.json` 与保存版本不需要迁移；旧 HTML 内嵌旧代码，单纯刷新不会加载本版三维编辑与操作说明。已运行 MCP 进程持有启动时加载的代码，替换插件文件不会自动更新该进程。安装、服务启动、历史兼容与识别 API 见 [README](../../README.md) 和 [0.17.0 发布说明](../../docs/RELEASE-0.17.0.md)；公式图形与校对 API 的完整说明保留在 [0.16.0 发布说明](../../docs/RELEASE-0.16.0.md)。
+更新到 0.20.3 后重新开启会话或重启 Anatomy MCP 连接，再用 `anatomy_render` 重新生成并打开画板。已有 `body.json` 与保存版本不需要迁移；旧 HTML 内嵌旧代码，单纯刷新不会加载本版三维编辑与操作说明。已运行 MCP 进程持有启动时加载的代码，替换插件文件不会自动更新该进程。安装见 [README](../../README.md#安装部署)，服务启动与历史兼容见 [使用与开发参考](../../docs/REFERENCE.md)，识别 API 见 [0.17.0 发布说明](../../docs/RELEASE-0.17.0.md)；公式图形与校对 API 的完整说明保留在 [0.16.0 发布说明](../../docs/RELEASE-0.16.0.md)。

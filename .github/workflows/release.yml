@@ -74,6 +74,18 @@ jobs:
           (cd "$RUNNER_TEMP" && sha256sum "$asset" > SHA256SUMS)
           if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
             gh release upload "$GITHUB_REF_NAME" "$RUNNER_TEMP/$asset" "$RUNNER_TEMP/SHA256SUMS" --clobber
+            gh release edit "$GITHUB_REF_NAME" --notes-file "$RUNNER_TEMP/release-notes.md"
           else
             gh release create "$GITHUB_REF_NAME" "$RUNNER_TEMP/$asset" "$RUNNER_TEMP/SHA256SUMS" --verify-tag --latest --title "Anatomy $GITHUB_REF_NAME" --notes-file "$RUNNER_TEMP/release-notes.md"
+          fi
+      - name: Update published release notes
+        if: github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          tag="v$(node -p "require('./package.json').version")"
+          gh release list --limit 100 --json tagName --jq '.[].tagName' > "$RUNNER_TEMP/release-tags.txt"
+          if grep -Fxq "$tag" "$RUNNER_TEMP/release-tags.txt"; then
+            gh release edit "$tag" --notes-file "$RUNNER_TEMP/release-notes.md"
           fi
