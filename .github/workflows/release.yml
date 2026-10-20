@@ -1,0 +1,62 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - name: Check version and prepare release notes
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFileSync, writeFileSync } from 'node:fs';
+          const version = JSON.parse(readFileSync('package.json')).version;
+          const plugin = JSON.parse(readFileSync('.codex-plugin/plugin.json'));
+          if (process.env.GITHUB_REF_NAME !== 'v' + version || plugin.version !== version) throw Error('Release versions do not match');
+          const notes = readFileSync('CHANGELOG.md', 'utf8').split(/^## /m).find(section => section.startsWith(version + ' '));
+          if (!notes) throw Error('Release notes are missing');
+          const base = process.env.GITHUB_SERVER_URL + '/' + process.env.GITHUB_REPOSITORY + '/blob/' + process.env.GITHUB_REF_NAME + '/';
+          writeFileSync(process.env.RUNNER_TEMP + '/release-notes.md', '## ' + notes.trim().replace(/\]\((?!https?:|#)([^)]+)\)/g, (_, path) => '](' + new URL(path, base).href + ')') + '\n');
+          NODE
+      - name: Test board and launcher
+        run: |
+          npm test
+          python3 native/selftest.py
+      - name: Test real WebGL editing
+        run: |
+          npm install --prefix "$RUNNER_TEMP/browser-tests" --no-save --package-lock=false playwright@1.62.1
+          "$RUNNER_TEMP/browser-tests/node_modules/.bin/playwright" install --with-deps chromium
+          export ANATOMY_PLAYWRIGHT_MODULE="$RUNNER_TEMP/browser-tests/node_modules/playwright/index.mjs"
+          npm run test:space:browser
+      - name: Package and publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          npm pack --json --pack-destination "$RUNNER_TEMP" > "$RUNNER_TEMP/pack.json"
+          asset=$(node -p 'JSON.parse(require("node:fs").readFileSync(process.env.RUNNER_TEMP + "/pack.json"))[0].filename')
+          (cd "$RUNNER_TEMP" && sha256sum "$asset" > SHA256SUMS)
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" "$RUNNER_TEMP/$asset" "$RUNNER_TEMP/SHA256SUMS" --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" "$RUNNER_TEMP/$asset" "$RUNNER_TEMP/SHA256SUMS" --verify-tag --latest --title "Anatomy $GITHUB_REF_NAME" --notes-file "$RUNNER_TEMP/release-notes.md"
+          fi

@@ -6,6 +6,7 @@ import {apply} from '../lib/index.js'
 import {boardDiagnostics,boardFor,boardBundle,lineEnds,deleteElements,moveElements,BOARD_TYPES,elementProgram,validMathInk} from '../lib/board.js'
 import {mappingIndex,impactOf} from '../lib/mapping.js'
 import {renderAnatomy} from '../lib/render.js'
+import {spaceLinks} from '../lib/board-space.js'
 import { FORMULA_GROUPS, MATH_SYMBOL_GROUPS, formulaMarkup } from '../lib/math.js'
 import { createRequire } from 'node:module'
 const katex = createRequire(import.meta.url)('../lib/vendor/katex.cjs')
@@ -18,6 +19,44 @@ test('无系统、无器官也可创建、渲染和反查自由画板',async t=>
 test('图形种类完整，未知字段在修改包内原样保留',()=>{const b={version:1,elements:BOARD_TYPES.map((type,i)=>({...rect('e'+i),type,...(['pen','polygon'].includes(type)?{points:[[0,0],[1,0],[.5,1]]}:{}),...(type==='image'?{image:{src:'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAMAAAACCAIAAAASFvFNAAAAFUlEQVR4nGN0S1nAwMDAwMDAxAADABcWAU7Ylb4oAAAAAElFTkSuQmCC',alt:'工程示意图',width:3,height:2}}:{})}))};assert.deepEqual(boardDiagnostics(b),[]);const c=structuredClone(b);c.elements[0].text='新的人的意图';const pack=boardBundle(b,c,'model','baseline');assert.equal(pack.baseHash,'baseline');assert.deepEqual(pack.edits[0].patch.board,c);assert.deepEqual(boardBundle(c,c,'model','baseline').edits,[])})
 test('缺引用、重复标识、非法几何、代码混入人读均阻断整包写入',async t=>{const {call,dir}=await fixture(t);await call('board',{board:board()});const baseline=readFileSync(join(dir,'body.json'),'utf8');for(const mutate of [b=>b.elements.push({...rect('a')}),b=>b.elements[0].width=-1,b=>b.elements[0].text='const x = 1',b=>b.elements[0].targets=[{kind:'organ',id:'missing'}],b=>b.elements[2].to='gone',b=>b.elements[0].anchors=['bad'],b=>b.elements[0].fill='#abcde',b=>b.elements.push(null)]){const b=board();mutate(b);assert.equal((await call('board',{board:b,force:true,strict:false})).ok,false);assert.equal(readFileSync(join(dir,'body.json'),'utf8'),baseline)}})
 test('画板修改带基线落地，陈旧版本拒绝且完整程序元数据保留',async t=>{const {call}=await fixture(t);const first=await call('board',{board:board()});const next=structuredClone(first.board);next.elements[0].text='新的工程意图';const pack=boardBundle(first.board,next,'model',first.anatomyHash);assert.equal((await call('apply_edits',pack)).ok,true);assert.equal((await call('board',{element:'a'})).element.implementation.extra.preserve,true);assert.equal((await call('apply_edits',pack)).ok,false)})
+
+test('三轴角度与有符号局部拉伸通过严格保存和程序几何往返',async t=>{
+  const {call,dir}=await fixture(t),b=board()
+  Object.assign(b.elements[0],{type:'polygon',points:[[0,0],[1,0],[.5,1]],z:80,rotationX:31,rotationY:-47,rotation:83,extrusion:-60,extension:{poseTag:'保留'}})
+  assert.deepEqual(boardDiagnostics(b),[])
+  assert.equal((await call('board',{board:b})).ok,true)
+  const read=await call('board',{element:'a'})
+  for(const key of ['z','rotationX','rotationY','rotation','extrusion'])assert.equal(read.program.geometry[key],b.elements[0][key])
+  assert.deepEqual(read.element.extension,b.elements[0].extension)
+  assert.equal(read.program.implementation.code,'return input;')
+  const changed=structuredClone(read.board);changed.elements[0].extrusion=90;changed.elements[0].rotationX=0
+  assert.equal((await call('apply_edits',boardBundle(read.board,changed,'model',read.anatomyHash))).ok,true)
+  const saved=await call('board',{element:'a'})
+  assert.equal(saved.program.geometry.extrusion,90);assert.equal(saved.program.geometry.rotationX,0)
+  const before=readFileSync(join(dir,'body.json'),'utf8'),bad=structuredClone(saved.board);bad.elements[0].extrusion=1e7+1
+  assert.equal((await call('board',{board:bad,force:true,strict:false})).ok,false)
+  assert.equal(readFileSync(join(dir,'body.json'),'utf8'),before)
+  assert.equal(Object.hasOwn(elementProgram(rect('legacy')).geometry,'rotationX'),false)
+})
+
+test('空间姿态和局部拉伸拒绝非有限值、越界值及非闭合图元',()=>{
+  for(const key of ['rotationX','rotationY'])for(const value of [NaN,Infinity,-Infinity,null,'30',1e7+1,-1e7-1]){
+    const b=board();b.elements[0][key]=value
+    assert.ok(boardDiagnostics(b).some(error=>error.code==='board/rotation'),key+': '+value)
+  }
+  for(const value of [NaN,Infinity,null,'40',1e7+1,-1e7-1]){
+    const b=board();b.elements[0].extrusion=value
+    assert.ok(boardDiagnostics(b).some(error=>error.code==='board/extrusion'),String(value))
+  }
+  for(const type of ['rect','ellipse','diamond','polygon'])for(const extrusion of [-1e7,0,1e7]){
+    const e={...rect('valid'),type,rotationX:1e7,rotationY:-1e7,extrusion,...(type==='polygon'?{points:[[0,0],[1,0],[.5,1]]}:{})}
+    assert.deepEqual(boardDiagnostics({version:1,elements:[e]}),[])
+  }
+  for(const type of BOARD_TYPES.filter(type=>!['rect','ellipse','diamond','polygon'].includes(type))){
+    const e={...rect('invalid'),type,extrusion:0,...(type==='pen'?{points:[[0,0],[1,1]]}:{})}
+    assert.ok(boardDiagnostics({version:1,elements:[e]}).some(error=>error.code==='board/extrusion-type'),type)
+  }
+})
 
 const mathInk=()=>({mode:'math',strokes:[[[20,30],[80,100]]],reviewed:false,candidate:{text:'x ≥ 0',engine:'local-test',extension:{keep:true}},extension:{keep:true}})
 const formulaPng='data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAMAAAACCAIAAAASFvFNAAAAFUlEQVR4nGN0S1nAwMDAwMDAxAADABcWAU7Ylb4oAAAAAElFTkSuQmCC'
@@ -94,10 +133,63 @@ test('新显示字段的保存与应用过严格门禁，真实笔迹和源码�
 test('源码变化必须复核，普通画板编辑不能重置源码基线',async t=>{const {call,root}=await fixture(t);writeFileSync(join(root,'part.js'),'export const value = 1;');const b=board();b.elements[0].anchors=[{file:'part.js'}];const first=await call('board',{board:b});assert.equal(first.ok,true);writeFileSync(join(root,'part.js'),'export const value = 2;');const next=structuredClone(first.board);next.elements[0].text='修改说明';const failed=await call('board',{board:next});assert.equal(failed.ok,false);assert.ok(failed.errors.some(e=>e.code==='anchor/source-changed'));assert.equal((await call('board')).board.elements[0].anchors[0].sha256,first.board.elements[0].anchors[0].sha256);const reviewed=await call('board',{board:next,reviewSources:true});assert.equal(reviewed.ok,true);assert.notEqual(reviewed.board.elements[0].anchors[0].sha256,first.board.elements[0].anchors[0].sha256)})
 test('连线停在形状边界，移动和删除端点后位置连续',()=>{const b=board(),line=b.elements[2];assert.deepEqual(lineEnds(line,b.elements),{a:{x:100,y:40},b:{x:300,y:40}});moveElements(b,['a'],20,0);assert.equal(lineEnds(line,b.elements).a.x,120);const ends=lineEnds(line,b.elements);deleteElements(b,['a']);assert.deepEqual(lineEnds(line,b.elements),ends);assert.equal(line.from,undefined);assert.equal(line.to,'b');assert.deepEqual(boardDiagnostics(b),[])})
 test('连续拖动连线采用原始坐标，移动组合不二次偏移',()=>{const b=board(),original=structuredClone(b);moveElements(b,['link'],10,20,original);moveElements(b,['link'],30,40,original);assert.deepEqual(lineEnds(b.elements[2],b.elements),{a:{x:130,y:80},b:{x:330,y:80}});assert.equal(b.elements[2].from,undefined);const all=board();moveElements(all,['a','b','link'],30,40);assert.deepEqual(lineEnds(all.elements[2],all.elements),{a:{x:130,y:80},b:{x:330,y:80}});assert.equal(all.elements[2].from,'a')})
+test('删除倾斜节点后连接器保留世界端点，已烘焙姿态不会再次旋转',()=>{
+  const node={...rect('a'),z:80,rotationY:60,extrusion:40}
+  const edge={id:'edge',type:'arrow',x:50,y:40,width:250,height:0,z:20,endZ:90,from:'a',rotationX:17,rotationY:-23,rotation:31,extension:{keep:true}}
+  const b={version:1,elements:[node,edge]},before=spaceLinks(b.elements)[0]
+  deleteElements(b,['a'])
+  const after=spaceLinks(b.elements)[0]
+  for(const end of ['a','b'])for(const axis of ['x','y','z'])assert.ok(Math.abs(after[end][axis]-before[end][axis])<1e-7,end+'.'+axis)
+  assert.equal(edge.from,undefined);assert.equal(edge.rotationX,undefined);assert.equal(edge.rotationY,undefined);assert.equal(edge.rotation,0)
+  assert.deepEqual(edge.extension,{keep:true});assert.deepEqual(boardDiagnostics(b),[])
+})
+test('二维移动自由三轴连接器保留局部姿态，反复拖动按原始坐标计算',()=>{
+  const edge={id:'edge',type:'line',x:20,y:30,width:200,height:50,z:80,endZ:-10,rotationX:17,rotationY:29,rotation:43}
+  const b={version:1,elements:[edge]},original=structuredClone(b),before=spaceLinks(b.elements)[0]
+  moveElements(b,['edge'],10,20,original);moveElements(b,['edge'],30,40,original)
+  const after=spaceLinks(b.elements)[0]
+  for(const end of ['a','b'])for(const axis of ['x','y','z'])assert.ok(Math.abs(after[end][axis]-before[end][axis]-(axis==='x'?30:axis==='y'?40:0))<1e-7,end+'.'+axis)
+  for(const key of ['width','height','rotationX','rotationY','rotation','z','endZ'])assert.equal(edge[key],original.elements[0][key])
+})
 test('已有器官可作为图元映射，但不强制引入三维',()=>{const b=boardFor({},[{id:'a',name:'处理',gist:'处理输入'}],[]);assert.deepEqual(b.elements[0].targets,[{kind:'organ',id:'a'}]);const html=renderAnatomy({title:'工程',board:board()},[],[]);assert.ok(!html.includes('chart3d'));assert.ok(html.includes('data-tool="polygon"'));assert.ok(html.includes('data-tab="program"'))})
 // Run the real inline client through DOM events; geometry and persistence are checked separately above.
-function runtime(b,options={}){const elements=new Map(),callbacks=new Map(),storage=options.storage||new Map();const node=id=>{if(elements.has(id))return elements.get(id);const listeners={};const n={id,value:'',innerHTML:'',textContent:'',style:{},dataset:{},listeners,attributes:{},classList:{add(){},remove(){},toggle(){return true}},setAttribute(k,v){this.attributes[k]=v},getAttribute(k){return this.attributes[k]},addEventListener(k,f){(listeners[k]??=[]).push(f)},querySelector(){return null},getBoundingClientRect(){return {left:0,top:0,width:1000,height:700}},setPointerCapture(){},showModal(){this.open=true},close(){this.open=false},focus(){},click(){},appendChild(){},remove(){}};elements.set(id,n);return n};const document={compatMode:'CSS1Compat',getElementById:node,querySelectorAll:()=>[],body:node('body'),addEventListener(k,f){callbacks.set(k,f)},createElement:()=>node('download')};const context={document,window:{addEventListener(){}},localStorage:{setItem(k,v){storage.set(k,v)},getItem(k){return storage.get(k)},removeItem(k){storage.delete(k)}},structuredClone,console,Blob,URL,AbortController,setTimeout:()=>0,clearTimeout(){},...options.globals};if(options.recognitionProvider)storage.set('anatomy-recognition:preferences',JSON.stringify({provider:options.recognitionProvider,endpoint:''}));const html=renderAnatomy({slug:'model',title:'工程',board:b},[],[]);vm.runInNewContext(html.match(/<script>([\s\S]*)<\/script>/)[1],context);return {context,api:context.window.__anatomyBoard,node,callbacks,storage,fire(id,type,ev={}){for(const f of node(id).listeners[type]||[])f(ev)}}}
+function runtime(b,options={}){const elements=new Map(),callbacks=new Map(),storage=options.storage||new Map();const node=id=>{if(elements.has(id))return elements.get(id);const listeners={};const n={id,value:'',innerHTML:'',textContent:'',style:{},dataset:{},listeners,attributes:{},classList:{add(){},remove(){},toggle(){return true}},setAttribute(k,v){this.attributes[k]=v},getAttribute(k){return this.attributes[k]},addEventListener(k,f){(listeners[k]??=[]).push(f)},querySelector(){return null},getBoundingClientRect(){return {left:0,top:0,width:1000,height:700}},setPointerCapture(){},showModal(){this.open=true},close(){this.open=false},focus(){},click(){},appendChild(){},remove(){}};elements.set(id,n);return n};const document={compatMode:'CSS1Compat',getElementById:node,querySelectorAll:()=>[],body:node('body'),addEventListener(k,f,options){
+    let dispatch=callbacks.get(k)
+    if(!dispatch){
+      const listeners=[]
+      dispatch=event=>{
+        let stopped=false
+        const previousStop=event.stopImmediatePropagation
+        event.stopImmediatePropagation=()=>{stopped=true;previousStop?.call(event)}
+        try{
+          for(const entry of [...listeners].sort((a,b)=>Number(b.capture)-Number(a.capture))){
+            entry.handler(event)
+            if(stopped)break
+          }
+        }finally{
+          if(previousStop)event.stopImmediatePropagation=previousStop
+          else delete event.stopImmediatePropagation
+        }
+      }
+      dispatch.listeners=listeners
+      callbacks.set(k,dispatch)
+    }
+    const capture=options===true||Boolean(options?.capture)
+    if(!dispatch.listeners.some(entry=>entry.handler===f&&entry.capture===capture))dispatch.listeners.push({handler:f,capture})
+  },createElement:()=>node('download')};const context={document,window:{addEventListener(){}},localStorage:{setItem(k,v){storage.set(k,v)},getItem(k){return storage.get(k)},removeItem(k){storage.delete(k)}},structuredClone,console,Blob,URL,AbortController,setTimeout:()=>0,clearTimeout(){},...options.globals};if(options.recognitionProvider)storage.set('anatomy-recognition:preferences',JSON.stringify({provider:options.recognitionProvider,endpoint:''}));const html=renderAnatomy({slug:'model',title:'工程',board:b},[],[]);vm.runInNewContext(html.match(/<script>([\s\S]*)<\/script>/)[1],context);return {context,api:context.window.__anatomyBoard,node,callbacks,storage,fire(id,type,ev={}){for(const f of node(id).listeners[type]||[])f(ev)}}}
 const ev=(x,y,id)=>({button:0,clientX:x,clientY:y,pointerId:1,preventDefault(){},target:{closest(q){return q==='[data-id]'&&id?{getAttribute:()=>id}:null}}})
+test('二维编辑与撤销重做保留空间姿态、拉伸和未知字段，浏览器共享几何函数可用',()=>{
+  const b=board();b.layout={mode:'manual'}
+  Object.assign(b.elements[0],{rotationX:31,rotationY:-47,rotation:83,extrusion:-60,z:80,extension:{poseTag:'保留'}})
+  const r=runtime(b),before=JSON.stringify(r.api.board)
+  for(const helper of ['spaceRotateVector','spacePosePoint','spaceUnposePoint','spaceShapeOutline'])assert.equal(typeof r.context[helper],'function',helper)
+  r.api.change(()=>{r.api.board.elements[0].text='更新说明'})
+  const after=JSON.stringify(r.api.board)
+  for(const key of ['rotationX','rotationY','rotation','extrusion','z','extension'])assert.equal(JSON.stringify(r.api.board.elements[0][key]),JSON.stringify(b.elements[0][key]))
+  r.api.undo();assert.equal(JSON.stringify(r.api.board),before)
+  r.api.redo();assert.equal(JSON.stringify(r.api.board),after)
+  assert.deepEqual(JSON.parse(JSON.stringify(r.api.bundle().edits[0].patch.board.elements[0].extension)),{poseTag:'保留'})
+})
 test('真实前端事件完成绘制、撤销重做、机读编辑和自然语言隔离',()=>{const r=runtime(board());r.api.select('a');assert.ok(!r.node('inspector').innerHTML.includes('return input;'));r.api.setTool('rect');r.fire('surface','pointerdown',ev(150,150));r.fire('surface','pointermove',ev(360,260));r.fire('surface','pointerup',ev(360,260));assert.equal(r.api.board.elements.length,4);const id=r.api.selected[0];assert.equal(r.api.board.elements[3].type,'rect');r.api.undo();assert.equal(r.api.board.elements.length,3);r.api.redo();assert.equal(r.api.board.elements.length,4);r.api.select(id);r.api.canvas.openProgram(id);r.fire('inspector','input',{target:{dataset:{field:'implementation.code'},value:'const answer = 42;',type:'textarea'}});r.api.canvas.confirm();assert.equal(r.api.bundle().edits[0].patch.board.elements[3].implementation.code,'const answer = 42;');assert.ok(!r.node('world').innerHTML.includes('const answer'));assert.ok(r.storage.size>0);r.api.undo();assert.equal(r.api.board.elements[3].implementation,undefined)})
 test('自由笔迹和逐点多边形经实际事件形成有效可映射图元',()=>{const r=runtime({version:1,elements:[]});r.api.setTool('pen');r.fire('surface','pointerdown',ev(100,100));r.fire('surface','pointermove',ev(120,130));r.fire('surface','pointermove',ev(180,110));r.fire('surface','pointerup',ev(180,110));assert.equal(r.api.board.elements[0].type,'pen');r.api.setTool('polygon');for(const p of [[200,100],[300,100],[260,200]])r.fire('surface','pointerdown',ev(...p));r.callbacks.get('keydown')({key:'Enter',target:{},preventDefault(){}});assert.equal(r.api.board.elements[1].type,'polygon');assert.deepEqual(boardDiagnostics(r.api.board),[]);r.api.duplicate();assert.equal(r.api.board.elements.length,3);r.api.remove();assert.equal(r.api.board.elements.length,2)})
 test('恶意程序内容只存数据，不关闭内联脚本或进入画板人读',()=>{const b=board();b.elements[0].implementation.code='</script><img src=x onerror=alert(1)>';const html=renderAnatomy({title:'工程',board:b},[],[]);assert.equal((html.match(/<\/script>/g)||[]).length,1);const r=runtime(b);assert.ok(!r.node('world').innerHTML.includes('onerror'));assert.equal(r.api.board.elements[0].implementation.code,b.elements[0].implementation.code)})

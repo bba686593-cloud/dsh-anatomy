@@ -1,7 +1,7 @@
 {
   "name": "anatomy",
-  "version": "0.17.0",
-  "description": "自然语言与数学工程画板：项目保存、选定历史版本、程序映射与严格实现校验。",
+  "version": "0.20.3",
+  "description": "二维工程画板与 GPU 三维空间：共用图元、程序映射、选定历史版本与严格实现校验。",
   "skills": "./skills/",
   "mcpServers": "./.mcp.json",
   "interface": {

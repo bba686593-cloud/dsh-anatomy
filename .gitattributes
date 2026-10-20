@@ -1,0 +1,2 @@
+# Generated shader strings retain upstream whitespace.
+lib/vendor/three-space.js -whitespace
