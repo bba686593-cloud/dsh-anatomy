@@ -1,6 +1,6 @@
 {
   "name": "@dsh-external/dsh-anatomy",
-  "version": "0.20.4",
+  "version": "0.20.5",
   "description": "自由工程画板：二维编辑与 GPU 三维空间共用数据、程序映射和项目版本。",
   "type": "module",
   "main": "./lib/index.js",

@@ -33,6 +33,19 @@ test('concurrent callers share one service', async t => {
   const results=await Promise.all([ensureBoardService(file,options,runtime),ensureBoardService(file,options,runtime)])
   assert.equal(results[0].status,'ready'); assert.equal(results[0].pid,results[1].pid)
 })
+test('optional local OCR failure does not disable or restart the healthy board service', async t => {
+  const {file} = fixture(t), previous = process.env.ANATOMY_TEST_OCR_ERROR
+  process.env.ANATOMY_TEST_OCR_ERROR = "No module named 'paddleocr'"
+  let first
+  try { first = await ensureBoardService(file,options,runtime) }
+  finally { if (previous === undefined) delete process.env.ANATOMY_TEST_OCR_ERROR; else process.env.ANATOMY_TEST_OCR_ERROR = previous }
+  assert.equal(first.status,'ready');assert.equal(first.error,null)
+  assert.match(first.recognitionError,/paddleocr/)
+  assert.equal(await (await fetch(first.url)).text(),'<html>本工程</html>')
+  const second = await ensureBoardService(file,options,runtime)
+  assert.equal(second.status,'ready');assert.equal(second.reused,true);assert.equal(second.pid,first.pid)
+  assert.equal(second.recognitionError,first.recognitionError)
+})
 test('occupied port belonging to another board is preserved and a new port is chosen', async t => {
   const {file}=fixture(t)
   const other=createServer((req,res)=>{res.setHeader('Content-Type','application/json');res.end(JSON.stringify({service:'anatomy-handwriting',protocol:1,boardFile:'/another/board.html',instanceId:'other',ready:true}))})

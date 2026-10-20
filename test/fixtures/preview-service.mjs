@@ -4,8 +4,9 @@ import { readFileSync, writeFileSync, renameSync } from 'node:fs'
 const args = process.argv.slice(2)
 const value = flag => args[args.indexOf(flag) + 1]
 const boardFile = value('--file'), instanceId = value('--instance-id'), state = value('--state-file')
+const ocrError = process.env.ANATOMY_TEST_OCR_ERROR || null
 const server = createServer((req, res) => {
-  if (req.url === '/api/health') { res.setHeader('Content-Type', 'application/json'); res.end(JSON.stringify({service:'anatomy-handwriting',protocol:2,capabilities:["project-versions"],boardFile,instanceId,pid:process.pid,ready:true})) }
+  if (req.url === '/api/health') { res.setHeader('Content-Type', 'application/json'); res.end(JSON.stringify({service:'anatomy-handwriting',protocol:2,capabilities:["project-versions"],boardFile,instanceId,pid:process.pid,ready:!ocrError,error:ocrError})) }
   else if (req.url === '/anatomy.html') res.end(readFileSync(boardFile))
   else { res.statusCode = 404; res.end() }
 })
