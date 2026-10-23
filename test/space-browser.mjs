@@ -447,6 +447,30 @@ try {
   check(await page.evaluate(({ids,history})=>ids.every(id=>{const e=get(id);return e.rotationX>0&&e.rotationY>0&&e.rotation>0})&&undoStack.length===history+1,{ids:selectionIds,history:fixtureHistory})&&await snapshot()!==fixtureBoard,'范围多选后的所有对象含笔迹可一起移动和三轴旋转，只记一步历史')
   await page.keyboard.press('Control+z');check(await snapshot()===fixtureBoard,'多对象移动与旋转可一次完整撤销')
   await page.evaluate(()=>{const s=window.__selectionTestRestore;board=s.board;selected=new Set(s.selected);undoStack=s.undo;redoStack=s.redo;spaceState.selectionMode=s.selectionMode;setTool(s.tool);render();spaceState.engine.fit(false);spacePaint();delete window.__selectionTestRestore})
+  // A structural layout is reviewable before it becomes a document edit.
+  await page.evaluate(()=>{
+    window.__depthPreviewRestore={board,selected:[...selected],undo:undoStack,redo:redoStack,tool,rig:structuredClone(spaceState.penRig)}
+    board={version:1,layout:{mode:'manual'},elements:[
+      {id:'depth-a',type:'rect',x:0,y:0,width:240,height:120,text:'接收输入',fill:'#eef2ff'},
+      {id:'depth-b',type:'rect',x:440,y:0,width:240,height:120,text:'处理输入',fill:'#ecfdf5'},
+      {id:'depth-ab',type:'arrow',from:'depth-a',to:'depth-b',x:0,y:0,width:1,height:1,text:'传递输入'}]}
+    selected.clear();undoStack=[];redoStack=[];setTool('select');render();spacePaint()
+  })
+  const depthBefore=await snapshot(),depthRig=await page.evaluate(()=>JSON.stringify(spaceState.penRig.anchors))
+  if(!await page.locator('.space-advanced').evaluate(e=>e.open))await page.locator('.space-advanced summary').click()
+  await page.locator('#space-layers').click()
+  check(await page.locator('#space-layer-preview-dialog').isVisible()&&await snapshot()===depthBefore&&await page.evaluate(()=>undoStack.length===0&&spaceState.depthPreview.board.elements.find(e=>e.id==='depth-b').z>0),'结构分层打开真实预览，原工程与历史尚未变化')
+  await page.keyboard.press('Escape')
+  await page.waitForFunction(()=>!spaceState.depthPreview)
+  check(!await page.locator('#space-layer-preview-dialog').isVisible()&&await snapshot()===depthBefore,'Esc 关闭分层预览并恢复原工程')
+  await page.locator('#space-layers').click();await page.locator('#space-layer-preview-apply').click()
+  check(await page.evaluate(()=>get('depth-b').z>0&&undoStack.length===1)&&await page.evaluate(rig=>JSON.stringify(spaceState.penRig.anchors)===rig,depthRig),'应用结构分层只记一步，固定四角保持原位')
+  await page.keyboard.press('Control+z')
+  check(await snapshot()===depthBefore,'结构分层在真实网页中可以一次撤销')
+  await page.locator('#space-layers').click()
+  await page.evaluate(()=>{get('depth-a').text='外部更新后的说明';spacePaint()})
+  check(!await page.locator('#space-layer-preview-dialog').isVisible()&&await page.evaluate(()=>!spaceState.depthPreview&&get('depth-a').text==='外部更新后的说明'&&!get('depth-b').z),'分层预览期间工程更新会使预览失效，保留新内容')
+  await page.evaluate(()=>{const s=window.__depthPreviewRestore;board=s.board;selected=new Set(s.selected);undoStack=s.undo;redoStack=s.redo;spaceState.penRig=s.rig;setTool(s.tool);render();spacePaint();delete window.__depthPreviewRestore})
   // The idle renderer must not schedule an animation loop.
   await page.waitForTimeout(100)
   const idle = await page.evaluate(() => spaceState.engine.info().revision)

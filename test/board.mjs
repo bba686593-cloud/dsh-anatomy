@@ -151,7 +151,54 @@ test('二维移动自由三轴连接器保留局部姿态，反复拖动按原�
   for(const end of ['a','b'])for(const axis of ['x','y','z'])assert.ok(Math.abs(after[end][axis]-before[end][axis]-(axis==='x'?30:axis==='y'?40:0))<1e-7,end+'.'+axis)
   for(const key of ['width','height','rotationX','rotationY','rotation','z','endZ'])assert.equal(edge[key],original.elements[0][key])
 })
+test('二维反复拖动不等采样的绝对三维笔迹始终从原坐标平移',()=>{
+  const ink={id:'ink',type:'pen',x:0,y:0,width:100,height:100,z:20,points:[[0,0],[1,1]],points3d:[[0,0,20],[50,80,30],[100,100,40]]},b={version:1,elements:[ink]},original=structuredClone(b)
+  moveElements(b,['ink'],10,20,original);moveElements(b,['ink'],30,40,original)
+  assert.equal(ink.x,30);assert.equal(ink.y,40)
+  assert.deepEqual(ink.points3d,[[30,40,20],[80,120,30],[130,140,40]])
+  assert.deepEqual(original.elements[0].points3d,[[0,0,20],[50,80,30],[100,100,40]])
+})
 test('已有器官可作为图元映射，但不强制引入三维',()=>{const b=boardFor({},[{id:'a',name:'处理',gist:'处理输入'}],[]);assert.deepEqual(b.elements[0].targets,[{kind:'organ',id:'a'}]);const html=renderAnatomy({title:'工程',board:board()},[],[]);assert.ok(!html.includes('chart3d'));assert.ok(html.includes('data-tool="polygon"'));assert.ok(html.includes('data-tab="program"'))})
+test('旧工程转换保留系统、父子分区和双向交接，源工程与保存布局不变',()=>{
+  const body={systems:[{id:'backend',name:'处理服务'},{id:'frontend',name:'输入界面'}]},organs=[{id:'root',name:'接收处理',systems:['backend']},{id:'child',name:'输入接口',parent:'root',systems:['frontend','backend']},{id:'leaf',name:'数据校验',parent:'child',systems:[]}],flows=[{id:'exchange',from:'root',to:'child',direction:'two-way',name:'交换结果'}]
+  const before=structuredClone({body,organs,flows}),b=boardFor(body,organs,flows),find=id=>b.elements.find(e=>e.id===id)
+  assert.deepEqual(boardDiagnostics(b,organs,flows),[])
+  assert.equal(find('group-root').frame,'system-backend')
+  assert.equal(find('group-child').frame,'group-root')
+  assert.equal(find('organ-root').frame,'group-root')
+  assert.equal(find('organ-leaf').frame,'group-child')
+  assert.deepEqual(find('organ-child').structure,{parent:'organ-root',systems:['frontend','backend']})
+  assert.equal(find('flow-exchange').direction,'two-way')
+  assert.equal(elementProgram(find('flow-exchange'),organs,flows).linked[0].value.direction,'two-way')
+  assert.deepEqual({body,organs,flows},before)
+  const reordered=boardFor(body,[...organs].reverse(),flows)
+  for(const e of b.elements){const other=reordered.elements.find(value=>value.id===e.id);for(const key of ['x','y','width','height','frame'])assert.equal(other[key],e[key],e.id+'.'+key)}
+  const saved={version:1,elements:[{...rect('custom'),z:500,rotationX:35,extension:{keep:true}}],extension:{keep:true}}
+  assert.deepEqual(boardFor({...body,board:saved},organs,flows),saved)
+  assert.notEqual(boardFor({...body,board:saved},organs,flows).elements,saved.elements)
+})
+test('旧父子循环不会生成循环分区或阻断打开，原父子事实仍可供显式分层处理',()=>{
+  const organs=[{id:'a',name:'甲',parent:'b'},{id:'b',name:'乙',parent:'a'}],b=boardFor({},organs,[])
+  assert.deepEqual(boardDiagnostics(b,organs,[]),[])
+  assert.equal(b.elements.find(e=>e.id==='organ-a').structure.parent,'organ-b')
+  assert.equal(b.elements.find(e=>e.id==='organ-b').structure.parent,'organ-a')
+  for(const e of b.elements)assert.ok([e.x,e.y,e.width,e.height].every(Number.isFinite))
+})
+test('箭头方向严格验证且完整修改包保留双向语义',()=>{
+  const b=board();b.elements[2].direction='two-way'
+  assert.deepEqual(boardDiagnostics(b),[])
+  const packed=boardBundle(board(),b,'model','baseline')
+  assert.equal(packed.edits[0].patch.board.elements[2].direction,'two-way')
+  for(const value of ['backward','',null,3]){b.elements[2].direction=value;assert.ok(boardDiagnostics(b).some(e=>e.code==='board/direction'))}
+  b.elements[0].direction='two-way';assert.ok(boardDiagnostics(b).some(e=>e.code==='board/direction'&&e.subject.element==='a'))
+})
+test('HTML展示不会隐式二维重排空间构图，并标明内嵌插件版本',()=>{
+  const b=board();b.elements[0].z=0;b.elements[1].z=500;b.elements[1].x=0
+  const before=structuredClone(b),html=renderAnatomy({title:'空间工程',board:b},[],[]),payload=JSON.parse(html.match(/const A = (.+);/)[1]),version=JSON.parse(readFileSync(new URL('../package.json',import.meta.url),'utf8')).version
+  assert.deepEqual(payload.board,before)
+  assert.deepEqual(b,before)
+  assert.ok(html.includes('<meta name="anatomy-plugin-version" content="'+version+'">'))
+})
 // Run the real inline client through DOM events; geometry and persistence are checked separately above.
 function runtime(b,options={}){const elements=new Map(),callbacks=new Map(),storage=options.storage||new Map();const node=id=>{if(elements.has(id))return elements.get(id);const listeners={};const n={id,value:'',innerHTML:'',textContent:'',style:{},dataset:{},listeners,attributes:{},classList:{add(){},remove(){},toggle(){return true}},setAttribute(k,v){this.attributes[k]=v},getAttribute(k){return this.attributes[k]},addEventListener(k,f){(listeners[k]??=[]).push(f)},querySelector(){return null},getBoundingClientRect(){return {left:0,top:0,width:1000,height:700}},setPointerCapture(){},showModal(){this.open=true},close(){this.open=false},focus(){},click(){},appendChild(){},remove(){}};elements.set(id,n);return n};const document={compatMode:'CSS1Compat',getElementById:node,querySelectorAll:()=>[],body:node('body'),addEventListener(k,f,options){
     let dispatch=callbacks.get(k)

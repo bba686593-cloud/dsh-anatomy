@@ -61,6 +61,7 @@ function runtime(elements = [card()], options = {}) {
         if (captures.delete(pointer)) this.emit('lostpointercapture', event({ pointerId: pointer }))
       },
       click() { dispatch(this, 'click') },
+      showModal() { this.open = true }, close() { this.open = false; this.emit('close', {}) },
     }
   }
   const node = id => { if (!nodes.has(id)) nodes.set(id, target(id)); return nodes.get(id) }
@@ -1871,4 +1872,61 @@ test('recognition refuses more than 500 semantic sources without submitting or c
   assert.equal(r.posts.length, 0)
   assert.equal(r.history.length, 0)
   assert.deepEqual(plain(r.board), original)
+})
+
+test('结构分层先预览，取消保留原位，应用只记一步且不改变固定四角',()=>{
+  const r=runtime([card('a'),card('b',{x:300}),{id:'ab',type:'arrow',from:'a',to:'b',x:0,y:0,width:1,height:1,text:'传递输入'}]),c=r.context
+  const before=JSON.stringify(r.board),rig=JSON.stringify(c.spaceState.penRig.anchors)
+  r.click('space-layers')
+  assert.equal(r.node('space-layer-preview-dialog').open,true)
+  assert.equal(JSON.stringify(r.board),before)
+  assert.equal(r.history.length,0)
+  assert.ok(r.rendererCalls.at(-1).board.elements.find(e=>e.id==='b').z>0)
+  assert.equal(c.spaceCanEdit(),false)
+  r.click('space-layer-preview-cancel')
+  assert.equal(JSON.stringify(r.rendererCalls.at(-1).board),before)
+  assert.equal(r.history.length,0)
+  r.click('space-layers');r.click('space-layer-preview-apply')
+  assert.ok(r.board.elements.find(e=>e.id==='b').z>0)
+  assert.equal(r.history.length,1)
+  assert.equal(JSON.stringify(c.spaceState.penRig.anchors),rig)
+  c.undo();r.flush()
+  assert.equal(JSON.stringify(r.board),before)
+  r.click('space-layers');c.change(()=>{c.board.elements[0].text='另一页面的新说明'});r.flush()
+  assert.equal(c.spaceState.depthPreview,null)
+  assert.equal(r.node('space-layer-preview-dialog').open,false)
+  assert.equal(r.board.elements[0].text,'另一页面的新说明')
+  assert.equal(r.board.elements[1].z,undefined)
+})
+
+test('关系识别跟随实际避让标签，标签位置改变使旧候选失效，收起时提示聚焦',()=>{
+  const r=recognitionRuntime([card('from'),card('to',{x:400}),{id:'ab',type:'arrow',from:'from',to:'to',x:0,y:0,width:1,height:1,text:'完整关系说明'}]),c=r.context
+  let label={id:'ab',visible:true,carrier:{x:200,y:260,z:30,width:180,height:60,rotationX:0,rotationY:0,rotation:0},corners:[{x:200,y:260,z:30},{x:380,y:260,z:30},{x:380,y:320,z:30},{x:200,y:320,z:30}]}
+  r.engine.labelGeometry=id=>id==='ab'?label:null
+  r.engine.info=()=>({objects:r.board.elements.length,labelLayout:[label]})
+  c.setTool('select');c.selected=new Set(['ab']);c.spacePaint()
+  const session=c.spaceRecognitionScope()
+  near(session.target.x,200);near(session.target.y,260);near(session.target.z,30)
+  assert.ok(session.originals.some(e=>e.id==='ab'))
+  assert.equal(c.spaceRecognitionCurrent(session),true)
+  label={...label,bounds:{x:250,y:240,width:180,height:60}}
+  assert.equal(c.spaceRecognitionCurrent(session),false)
+  label={...label,visible:false}
+  assert.throws(()=>c.spaceRecognitionScope(),/阅读大小/)
+})
+
+test('空间文字编辑使用实际标签平面，不重复叠加实体拉伸高度',()=>{
+  const r=runtime([card('a',{z:30,extrusion:90})]),c=r.context
+  c.canvasDraft={target:'a'};c.inlineWritingOpen=()=>true
+  r.engine.labelGeometry=()=>({visible:true,carrier:{x:200,y:300,z:120,width:180,height:70,rotationX:0,rotationY:0,rotation:0}})
+  c.spacePositionInlineEditor()
+  near(parseFloat(r.node('inline-writing').style.top),260)
+})
+
+test('分区识别仍覆盖分区内的内容，普通形状保留真实轮廓而非文字贴图四边',()=>{
+  const r=recognitionRuntime([card('area',{type:'frame',x:0,y:0,width:500,height:500}),card('inner',{x:200,y:200}),card('ellipse',{type:'ellipse',x:600,y:100,width:180,height:100})]),c=r.context
+  r.engine.labelGeometry=id=>({id,visible:true,carrier:{x:0,y:0,z:0,width:70,height:20},corners:[{x:0,y:0,z:0},{x:70,y:0,z:0},{x:70,y:20,z:0},{x:0,y:20,z:0}]})
+  c.setTool('select');c.selected=new Set(['area']);c.spacePaint()
+  assert.ok(c.spaceRecognitionScope().originals.some(e=>e.id==='inner'))
+  assert.equal(c.spaceRecognitionOutline(c.get('ellipse')).length,64)
 })

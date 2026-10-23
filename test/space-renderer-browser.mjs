@@ -137,9 +137,18 @@ const result=await page.evaluate(async()=>{
  const formulaAfter=formulaCalls,mathGroup=renderedScene.getObjectByName('space-component-placement')
  for(let i=0;i<20;i++){engine.setPlacement({...mathGhost,x:i,z:i*2,rotation:i*5});engine.draw()}
  checks.placementFormulaReusesResources=formulaAfter===formulaBefore+1&&formulaCalls===formulaAfter&&renderedScene.getObjectByName('space-component-placement')===mathGroup
- const imageTextures=engine.info().textures
- engine.setPlacement({...img,id:'image-ghost',x:30,y:40,z:50});engine.draw()
- checks.placementImageSharesTexture=engine.info().textures===imageTextures&&engine.info().pendingImages===0
+ // A new projected density may need another GPU raster, while the original
+ // decoded image must remain shared. Verify both the source reuse and the
+ // pixels of the actual placement texture rather than a global cache count.
+ const imageSourceDescriptor=Object.getOwnPropertyDescriptor(HTMLImageElement.prototype,'src')
+ let placementImageLoads=0
+ try{
+   Object.defineProperty(HTMLImageElement.prototype,'src',{...imageSourceDescriptor,set(value){if(value===img.image.src)placementImageLoads++;return imageSourceDescriptor.set.call(this,value)}})
+   engine.setPlacement({...img,id:'image-ghost',x:30,y:40,z:50});engine.draw()
+ }finally{Object.defineProperty(HTMLImageElement.prototype,'src',imageSourceDescriptor)}
+ const placementImageGroup=renderedScene.getObjectByName('space-component-placement'),placementImageCanvas=placementImageGroup.children.find(node=>node.material?.map)?.material.map.image
+ const placementAlpha=(x,y)=>placementImageCanvas.getContext('2d').getImageData(Math.floor(x*placementImageCanvas.width),Math.floor(y*placementImageCanvas.height),1,1).data[3]
+ checks.placementImageSharesTexture=placementImageLoads===0&&engine.info().pendingImages===0&&placementAlpha(.1,.1)>240&&placementAlpha(.5,.5)===0&&engine.info().textureBytes<=engine.info().textureBudget
  engine.setPlacement(null);engine.draw()
  const recordGroup=id=>{let group;renderedScene.traverse(node=>{if(node.userData.spaceId===id)group=node.parent});return group}
  const nativePoint=p=>({x:p.x,y:-p.y,z:p.z}),delta3=(a,b)=>Math.hypot(a.x-b.x,a.y-b.y,a.z-b.z)
@@ -204,9 +213,13 @@ const result=await page.evaluate(async()=>{
  engine.sync({elements:[profile]},[]);engine.fit(true);engine.draw()
  checks.hollowProfileExactPick=pick({x:30,y:160,z:0})==='profile'&&pick({x:160,y:160,z:0})===null
  engine.setPlacement({...tilted,id:'volume-ghost'});engine.draw()
- const volumeGhost=renderedScene.getObjectByName('space-component-placement'),volumeGhostIds=volumeGhost.children.map(node=>node.uuid).join(','),volumeGhostTextures=engine.info().textures
- for(let i=0;i<30;i++){engine.setPlacement({...tilted,id:'volume-ghost',rotationX:i*2,rotationY:i,rotation:-i,x:i});engine.draw()}
- checks.volumeGhostPoseReuse=renderedScene.getObjectByName('space-component-placement')===volumeGhost&&volumeGhostIds===volumeGhost.children.map(node=>node.uuid).join(',')&&engine.info().textures===volumeGhostTextures&&engine.info().placement.extrusion===90&&engine.info().placement.rotationX===58&&engine.info().placement.rotationY===29
+ const volumeGhost=renderedScene.getObjectByName('space-component-placement'),volumeGhostIds=volumeGhost.children.map(node=>node.uuid).join(','),volumeGhostRasters=new Set(),volumeGhostFormulaCalls=formulaCalls
+ for(let i=0;i<30;i++){
+   engine.setPlacement({...tilted,id:'volume-ghost',rotationX:i*2,rotationY:i,rotation:-i,x:i});engine.draw()
+   const map=volumeGhost.children.find(node=>node.material?.map)?.material.map
+   volumeGhostRasters.add(map.uuid)
+ }
+ checks.volumeGhostPoseReuse=renderedScene.getObjectByName('space-component-placement')===volumeGhost&&volumeGhostIds===volumeGhost.children.map(node=>node.uuid).join(',')&&volumeGhostRasters.size<10&&engine.info().textureBytes<=engine.info().textureBudget&&formulaCalls===volumeGhostFormulaCalls&&engine.info().placement.extrusion===90&&engine.info().placement.rotationX===58&&engine.info().placement.rotationY===29
  engine.setPlacement(null)
  engine.sync({elements:[{...back,text:''}]},[]);engine.fit(false);engine.draw()
  const plane={point:{x:10,y:20,z:30},normal:{x:.4,y:.5,z:1}},planePoint={x:60,y:20,z:10},planeScreen=at(planePoint),planeResult=engine.unprojectPlane(planeScreen.x,planeScreen.y,plane)

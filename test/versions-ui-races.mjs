@@ -17,7 +17,7 @@ const fixture = () => ({
 // Run the same generated inline client through its DOM listeners. Requests
 // remain pending while the test exercises ordinary canvas/guide editing.
 function runtime(fetch) {
-  const nodes = new Map(), storage = new Map()
+  const nodes = new Map(), storage = new Map();let reloads=0
   const node = id => {
     if (nodes.has(id)) return nodes.get(id)
     const listeners = {}
@@ -44,14 +44,14 @@ function runtime(fetch) {
   const context = {
     document, window: { addEventListener() {} }, fetch,
     localStorage: { setItem(key, value) { storage.set(key, value) }, getItem(key) { return storage.get(key) }, removeItem(key) { storage.delete(key) } },
-    structuredClone, Blob, URL, AbortController, setTimeout: () => 0, clearTimeout() {}
+    structuredClone, Blob, URL, AbortController, setTimeout: () => 0, clearTimeout() {},location:{reload(){reloads++}}
   }
   const html = renderAnatomy({ slug: 'version-races', title: '版本等待回归', board: fixture() }, [], [])
   vm.runInNewContext(html.match(/<script>([\s\S]*)<\/script>/)[1], context)
   const api = context.window.__anatomyBoard
   const fire = (id, type, event = {}) => { for (const fn of node(id).listeners[type] || []) fn(event) }
   return {
-    api, node, storage, fire,
+    api, node, storage, fire,get reloads(){return reloads},setSpatialDraft(value){context.spaceState=value},
     text(value, confirm = true) {
       api.canvas.openTextEditor('input'); node('canvas-text-input').value = value
       fire('canvas-text-input', 'input', { target: node('canvas-text-input') })
@@ -193,4 +193,38 @@ test('历史选择等待期间独立导读草稿保留，确认后保存新的�
   assert.equal(await r.api.versions.save(), true)
   assert.equal(service.posts.at(-1).payload.expectedSelection, 'revision-older')
   assert.equal(service.posts.at(-1).payload.board.reading.steps[0].description, '等待期间补充的阅读范围。')
+})
+
+test('新版界面提示先保存当前修改，再刷新；保存中产生的新稿不会被刷新丢弃',async()=>{
+  const service=versionService()
+  const r=runtime(async(...args)=>{const response=await service.fetch(...args);return{ok:response.ok,json:async()=>({...await response.json(),pluginVersion:'999.0.0'})}})
+  await r.api.versions.refresh(true)
+  assert.equal(r.node('runtime-update').hidden,false)
+  r.text('更新界面前的工程修改。')
+  const waiting=service.hold('/api/versions')
+  const refresh=r.node('runtime-refresh').listeners.click[0]()
+  await waiting.pending
+  r.text('保存等待时继续写下的新意图。')
+  waiting.release();await refresh
+  assert.equal(r.reloads,0)
+  assert.equal(r.api.board.elements[0].text,'保存等待时继续写下的新意图。')
+  assertDraftStored(r,'保存等待时继续写下的新意图。')
+  await r.node('runtime-refresh').listeners.click[0]()
+  assert.equal(service.posts.at(-1).payload.board.elements[0].text,'保存等待时继续写下的新意图。')
+  assert.equal(r.reloads,1)
+})
+
+
+test('更新界面保留未放置的空间轮廓、拉伸和组件草稿',async()=>{
+  const service=versionService(),r=runtime(service.fetch)
+  await r.api.versions.refresh(true)
+  const pending={placement:{type:'polygon',extrusion:180,points:[[0,0],[1,0],[0,1]]},profileReady:true,pose:{rotationX:40,rotationY:30,rotation:20}}
+  r.setSpatialDraft(pending)
+  await r.node('runtime-refresh').listeners.click[0]()
+  assert.equal(r.reloads,0)
+  assert.equal(service.posts.length,0)
+  assert.equal(pending.placement.extrusion,180)
+  r.setSpatialDraft(null)
+  await r.node('runtime-refresh').listeners.click[0]()
+  assert.equal(r.reloads,1)
 })

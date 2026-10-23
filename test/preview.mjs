@@ -9,6 +9,7 @@ import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { ensureBoardService, previewFiles, openBoardBrowser } from '../lib/preview.js'
 import { apply, normalizeConfig } from '../lib/index.js'
+import { saveVersion, versionState, versionPaths } from '../lib/versions.js'
 const runtime = {script:fileURLToPath(new URL('./fixtures/preview-service.mjs', import.meta.url))}
 const options = {pythonPath:process.execPath,port:0}
 function fixture(t) {
@@ -78,4 +79,35 @@ test('configuration defaults and browser URL boundary',async()=>{
   assert.equal(normalizeConfig({autoServe:false}).autoServe,false)
   assert.equal(normalizeConfig({autoOpen:false}).autoOpen,false)
   assert.equal((await openBoardBrowser('https://outside.example')).status,'failed')
+})
+test('serving an older generated page uses the current UI without changing its project or history',async t=>{
+  const {root,file}=fixture(t)
+  const body={schema:'anatomy/1',slug:'upgrade',title:'保留空间工程',oneline:'按原位置阅读。',systems:[],board:{version:1,layout:{mode:'manual'},elements:[{id:'part',type:'rect',x:10,y:20,z:300,width:200,height:100,text:'原有说明'}]}}
+  writeFileSync(join(root,'body.json'),JSON.stringify(body))
+  const selected=saveVersion(root,{body:'upgrade',board:{...body.board,elements:[{...body.board.elements[0],text:'选定历史说明'}]},baseHash:versionState(root).hash,expectedSelection:null})
+  const oldHtml='<html><body><script>{const A=[];} {const A={vendor:true};} const A = '+JSON.stringify({clientVersion:'0.17.0',body,board:body.board,anatomyHash:'legacy-hash'})+';</script></body></html>'
+  writeFileSync(file,oldHtml)
+  const protectedFiles=[join(root,'body.json'),versionPaths(root).selection,join(versionPaths(root).directory,selected.saved+'.json')]
+  const before=protectedFiles.map(path=>readFileSync(path,'utf8'))
+  const service=await ensureBoardService(file,{pythonPath:process.env.PYTHON||'python3',port:0})
+  assert.ok(['ready','starting'].includes(service.status),service.error)
+  const response=await fetch(service.url),html=await response.text()
+  assert.equal(response.status,200)
+  assert.match(html,/function createSpaceRenderer/)
+  const version=JSON.parse(readFileSync(new URL('../package.json',import.meta.url),'utf8')).version
+  assert.ok(html.includes('"clientVersion":"'+version+'"'))
+  assert.ok(html.slice(0,8192).includes('name="anatomy-plugin-version" content="'+version+'"'))
+  assert.equal(readFileSync(file,'utf8'),oldHtml)
+  assert.deepEqual(protectedFiles.map(path=>readFileSync(path,'utf8')),before)
+  const current=await(await fetch(new URL('/api/versions/current',service.url))).json()
+  assert.equal(current.pluginVersion,version)
+  assert.equal(current.board.elements[0].text,'选定历史说明')
+  const unversioned=oldHtml.replace('"clientVersion":"0.17.0",','')
+  writeFileSync(file,unversioned)
+  assert.match(await(await fetch(service.url)).text(),/function createSpaceRenderer/)
+  assert.equal(readFileSync(file,'utf8'),unversioned)
+  assert.deepEqual(protectedFiles.map(path=>readFileSync(path,'utf8')),before)
+  const ordinary='<html><body><script>const A = {"clientVersion":"0.1.0"};</script></body></html>'
+  writeFileSync(file,ordinary)
+  assert.equal(await(await fetch(service.url)).text(),ordinary)
 })

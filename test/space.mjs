@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { spaceScene, autoDepth, spaceLinks, spaceTranslateElement, spaceStrokePoints, spaceClipStroke, spacePenRig, spacePenLengths, spacePenPoint, spaceRotateVector, spacePosePoint, spaceUnposePoint, spaceShapeOutline, SPACE_MAX_RANK } from '../lib/board-space.js'
+import { spaceScene, autoDepth, spaceLinks, spaceTranslateElement, spaceStrokePoints, spaceClipStroke, spacePenRig, spacePenLengths, spacePenPoint, spaceRotateVector, spacePosePoint, spaceUnposePoint, spaceShapeOutline, spaceHasGeometry } from '../lib/board-space.js'
 import { boardDiagnostics } from '../lib/board.js'
 
 const card = (id, x, y, extra = {}) => ({ id, type: 'rect', x, y, width: 200, height: 100, text: id, ...extra })
@@ -130,8 +130,33 @@ test('explicit layering is deterministic across input order and disconnected com
   const other = [card('second-a', 0, 300), card('second-b', 400, 300), link('other', 'second-a', 'second-b')]
   const all = [...nodes, ...edges, ...other], first = autoDepth(all), reordered = autoDepth([...all].reverse())
   assert.deepEqual([...first].sort(), [...reordered].sort())
-  assert.equal(first.get('n17'), SPACE_MAX_RANK * 180)
+  assert.equal(first.get('n17'), 17 * 180)
   assert.equal(first.get('second-a'), 0); assert.equal(first.get('second-b'), 180)
+})
+test('dependency depth follows directed predecessors, condenses cycles and ignores frames and undirected lines', () => {
+  const nodes=['a','b','c','d','isolated'].map(id=>card(id,0,0)),edges=[link('ab','a','b'),link('ba','b','a'),link('bc','b','c'),link('cd','c','d'),{...link('line','isolated','d'),type:'line'}]
+  const elements=[{...card('frame',0,0),type:'frame',height:900000},...nodes,...edges],before=structuredClone(elements),depth=autoDepth(elements)
+  assert.deepEqual([...depth],[['a',0],['b',0],['c',180],['d',360],['isolated',0]])
+  assert.deepEqual(autoDepth([...elements].reverse()),depth)
+  assert.deepEqual(elements,before)
+})
+test('explicit parent structure takes precedence over a return flow and malformed parent cycles remain finite', () => {
+  const nodes=[card('parent',0,0),{...card('child',0,0),structure:{parent:'parent'}},{...card('leaf',0,0),structure:{parent:'child'}}]
+  const depths=autoDepth([...nodes,link('return','leaf','parent')])
+  assert.equal(depths.get('parent'),0);assert.equal(depths.get('child'),180);assert.equal(depths.get('leaf'),360)
+  nodes[0].structure={parent:'child'}
+  const cyclic=autoDepth(nodes)
+  assert.equal(cyclic.get('parent'),0);assert.equal(cyclic.get('child'),0);assert.equal(cyclic.get('leaf'),180)
+})
+test('bidirectional exchange shares one dependency level before downstream nodes', () => {
+  const depths=autoDepth([card('a',0,0),card('b',0,0),card('c',0,0),{...link('ab','a','b'),direction:'two-way'},link('bc','b','c')])
+  assert.deepEqual([...depths],[['a',0],['b',0],['c',180]])
+})
+test('spatial detection recognizes explicit zero-valued geometry without turning ordinary paper rotation into space', () => {
+  assert.equal(spaceHasGeometry({elements:[card('a',0,0,{rotation:30})]}),false)
+  for(const key of ['z','endZ','rotationX','rotationY','extrusion'])assert.equal(spaceHasGeometry({elements:[card('a',0,0,{[key]:0})]}),true,key)
+  assert.equal(spaceHasGeometry({elements:[{points3d:[[0,0,0],[1,1,1]]}]}),true)
+  assert.equal(spaceHasGeometry({spatialRig:spacePenRig(),elements:[]}),true)
 })
 test('translation keeps absolute ink and document geometry together', () => {
   const e = { id: 'ink', type: 'pen', x: 10, y: 20, width: 100, height: 50, z: 40, points: [[0, 0], [1, 1]], points3d: [[10, 20, 40], [110, 70, 70]] }

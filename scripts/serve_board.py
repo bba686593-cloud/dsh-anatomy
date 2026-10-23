@@ -149,6 +149,37 @@ def make_server(board_file, port, engine=None, instance_id=None):
         agent_configuration_hash = None
 
     class Handler(BaseHTTPRequestHandler):
+        def board_page(self):
+            page = board_file.read_bytes()
+            # Generated pages embed their UI. Serve the current renderer on a
+            # reload without rewriting the board, saved history, or HTML file.
+            marker = re.search(rb'<meta name="anatomy-plugin-version" content="([^"]+)">', page[:8192])
+            if marker and marker.group(1).decode('utf-8') == PLUGIN_VERSION:
+                return page
+            if not (board_file.parent / 'body.json').is_file():
+                return page
+            payload = None
+            for binding in re.finditer(rb'\bconst\s+A\s*=\s*(?=\{)', page):
+                try:
+                    candidate, _ = json.JSONDecoder().raw_decode(page[binding.end():].decode('utf-8'))
+                    if isinstance(candidate, dict) and isinstance(candidate.get('board'), dict) and isinstance(candidate.get('body'), dict) and isinstance(candidate.get('anatomyHash'), str):
+                        payload = candidate
+                        break
+                except (ValueError, UnicodeError):
+                    continue
+            if payload is None or payload.get('clientVersion') == PLUGIN_VERSION:
+                return page
+            try:
+                result = subprocess.run([os.environ.get('ANATOMY_NODE', 'node'), str(ROOT / 'scripts' / 'board-api.mjs'), str(board_file.parent)],
+                                        input=json.dumps(dict(action='view')), text=True, capture_output=True, timeout=20)
+                data = json.loads(result.stdout)
+                if result.returncode or data['status'] != 200 or not data['result'].get('ok'):
+                    raise RuntimeError('无法生成新版界面')
+                return data['result']['html'].encode('utf-8')
+            except Exception:
+                notice = '<div role="alert" style="padding:12px;background:#fff3cd;color:#664d03">界面更新未完成。请重启 Anatomy 插件并重新生成画板；当前工程与草稿仍可使用。</div>'
+                return page.replace(b'<body>', b'<body>' + notice.encode('utf-8'), 1) if b'<body>' in page else notice.encode('utf-8') + page
+
         def versions(self, action, payload=None):
             try:
                 result = subprocess.run([os.environ.get('ANATOMY_NODE', 'node'), str(ROOT / 'scripts' / 'board-api.mjs'), str(board_file.parent)],
@@ -285,7 +316,7 @@ def make_server(board_file, port, engine=None, instance_id=None):
                 return self.versions('current')
             if path in ('/', '/anatomy.html'):
                 try:
-                    return self.send(200, board_file.read_bytes(), 'text/html; charset=utf-8')
+                    return self.send(200, self.board_page(), 'text/html; charset=utf-8')
                 except OSError:
                     return self.send(404, dict(ok=False, error='画板文件不存在，请先生成画板。'))
             self.send(404, dict(ok=False, error='没有这个资源。'))
