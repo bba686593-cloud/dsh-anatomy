@@ -112,10 +112,14 @@ try {
   const drawn = await snapshot()
   await page.keyboard.press('Control+z');check(await snapshot()===fixed,'空间笔绘制可整笔撤销')
   await page.keyboard.press('Control+Shift+z');check(await snapshot()===drawn,'空间笔绘制可重做且保存定位框')
-  const cancelTip = await page.evaluate(() => JSON.stringify(spaceState.penRig.tip))
-  const currentTip = await page.evaluate(() => {const p=spaceState.engine.project(spaceState.penRig.tip),r=spaceHost().getBoundingClientRect();return {x:p.x+r.left,y:p.y+r.top}})
+  // Redo restores the document immediately; the pen presentation adopts its
+  // saved rig on the next paint. Capture the cancellation baseline afterwards.
+  await page.waitForFunction(()=>{const expected=board.spatialRig.tip,shown=spaceState.engine.info().penRig.tip;return [spaceState.penRig.tip,shown].every(tip=>['x','y','z'].every(axis=>Math.abs(tip[axis]-expected[axis])<1e-9))})
+  const currentTip = await page.evaluate(() => {const p=spaceState.engine.project(spaceState.penRig.tip),r=spaceHost().getBoundingClientRect();return {x:p.x+r.left,y:p.y+r.top,tip:JSON.stringify(spaceState.penRig.tip)}})
+  const cancelTip = currentTip.tip
   await page.mouse.move(currentTip.x,currentTip.y);await page.mouse.down();await page.mouse.move(currentTip.x+50,currentTip.y+20,{steps:3});await page.keyboard.press('Escape');await page.mouse.up()
-  check(await snapshot()===drawn&&await page.evaluate(()=>JSON.stringify(spaceState.penRig.tip))===cancelTip,'取消这一笔恢复笔尖并保留旧工程')
+  const cancelledTip=await page.evaluate(()=>JSON.stringify(spaceState.penRig.tip))
+  check(await snapshot()===drawn&&cancelledTip===cancelTip,'取消这一笔恢复笔尖并保留旧工程'+(cancelledTip===cancelTip?'':': '+cancelTip+' → '+cancelledTip))
   // Real mice keep one pointer for a button chord: additional down/up calls
   // become pointermove events with a changed buttons mask. Never fake a
   // second pointer when navigating in the middle of a left-button stroke.
