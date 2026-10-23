@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { spaceScene, autoDepth, spaceLinks, spaceTranslateElement, spaceStrokePoints, spaceClipStroke, spacePenRig, spacePenLengths, spacePenPoint, spaceRotateVector, spacePosePoint, spaceUnposePoint, spaceShapeOutline, spaceHasGeometry } from '../lib/board-space.js'
+import { spaceScene, autoDepth, spaceStructureLayout, spaceLinks, spaceTranslateElement, spaceStrokePoints, spaceClipStroke, spacePenRig, spacePenLengths, spacePenPoint, spaceRotateVector, spacePosePoint, spaceUnposePoint, spaceShapeOutline, spaceHasGeometry } from '../lib/board-space.js'
 import { boardDiagnostics } from '../lib/board.js'
 
 const card = (id, x, y, extra = {}) => ({ id, type: 'rect', x, y, width: 200, height: 100, text: id, ...extra })
@@ -310,4 +310,119 @@ test('invalid saved positioning data is rejected without silently replacing its 
     assert.throws(() => spacePenRig(board), { message: '空间笔定位框数据无效' })
     assert.deepEqual(board, before)
   }
+})
+
+
+function applyStructureLayout(elements, poses = spaceStructureLayout(elements)) {
+  return structuredClone(elements).map(e => {
+    const pose = poses.get(e.id)
+    if (!pose) return e
+    spaceTranslateElement(e, pose.x-e.x, pose.y-e.y, pose.z-(e.z||0))
+    if (e.type === 'frame') { e.width=pose.width; e.height=pose.height }
+    return e
+  })
+}
+function spatialNearCrossings(elements, clearance = 12) {
+  const edges=spaceLinks(elements),dot=(a,b)=>a.x*b.x+a.y*b.y+a.z*b.z,sub=(a,b)=>({x:a.x-b.x,y:a.y-b.y,z:a.z-b.z})
+  const pointDistance=(p,a,b)=>{
+    const u=sub(b,a),t=Math.max(0,Math.min(1,dot(sub(p,a),u)/(dot(u,u)||1)))
+    return Math.hypot(p.x-a.x-u.x*t,p.y-a.y-u.y*t,p.z-a.z-u.z*t)
+  }
+  let count=0
+  for(let i=0;i<edges.length;i++)for(let j=i+1;j<edges.length;j++){
+    const a=edges[i],b=edges[j]
+    if([a.from,a.to].some(id=>id&&(id===b.from||id===b.to)))continue
+    const u=sub(a.b,a.a),v=sub(b.b,b.a),w=sub(a.a,b.a),uu=dot(u,u),vv=dot(v,v),uv=dot(u,v),uw=dot(u,w),vw=dot(v,w),den=uu*vv-uv*uv
+    let distance=Math.min(pointDistance(a.a,b.a,b.b),pointDistance(a.b,b.a,b.b),pointDistance(b.a,a.a,a.b),pointDistance(b.b,a.a,a.b))
+    if(Math.abs(den)>1e-10){
+      const s=(uv*vw-vv*uw)/den,t=(uu*vw-uv*uw)/den
+      if(s>=0&&s<=1&&t>=0&&t<=1)distance=Math.min(distance,Math.hypot(w.x+u.x*s-v.x*t,w.y+u.y*s-v.y*t,w.z+u.z*s-v.z*t))
+    }
+    if(distance<clearance)count++
+  }
+  return count
+}
+
+test('relationship layout changes XYZ into a volume and preserves saved geometry until applied', () => {
+  const elements=[card('root',400,400),...['a','b','c'].map(id=>card(id,0,0,{rotation:15,extrusion:30})),...['a','b','c'].map(id=>link('root-'+id,'root',id))]
+  const original=structuredClone(elements),poses=spaceStructureLayout(elements),moved=applyStructureLayout(elements,poses)
+  assert.deepEqual(elements,original)
+  for(const axis of ['x','y','z'])assert.ok(elements.some(e=>poses.has(e.id)&&poses.get(e.id)[axis]!== (e[axis]||0)),axis+' is laid out')
+  const points=moved.filter(e=>e.type==='rect').map(e=>({x:e.x+e.width/2,y:e.y+e.height/2,z:e.z||0})),[a,b,c]=points.slice(1).map(p=>({x:p.x-points[0].x,y:p.y-points[0].y,z:p.z-points[0].z}))
+  const volume=Math.abs(a.x*(b.y*c.z-b.z*c.y)-a.y*(b.x*c.z-b.z*c.x)+a.z*(b.x*c.y-b.y*c.x))
+  assert.ok(volume>1000,'three branches and their parent are not all on one plane')
+  for(const e of moved.filter(e=>e.id!=='root'&&e.type==='rect')){assert.equal(e.rotation,15);assert.equal(e.extrusion,30)}
+  assert.deepEqual(spaceStructureLayout(moved),poses,'applying the same relationship layout twice does not drift')
+})
+
+test('relationship layout separates a real crossing in world space instead of choosing a camera trick', () => {
+  const elements=[card('root',-400,-200),card('a',0,0),card('b',0,500),card('c',500,500),card('d',500,0),link('ra','root','a'),link('rb','root','b'),link('ac','a','c'),link('bd','b','d')]
+  const before=spatialNearCrossings(elements),moved=applyStructureLayout(elements),after=spatialNearCrossings(moved)
+  assert.ok(before>0,'the original relation segments intersect physically')
+  assert.equal(after,0)
+  assert.ok(after<before)
+  // Rotating the whole engineering structure cannot recreate a removed contact.
+  const rotate=e=>{
+    if(e.type!=='arrow')return {...e,rotationX:32,rotationY:-24,rotation:17}
+    return e
+  }
+  assert.equal(spatialNearCrossings(moved.map(rotate)),0)
+})
+
+test('undirected and cyclic modules remain deterministic and keep nested frame membership and free ink', () => {
+  const outer={...card('outer',0,0),type:'frame',width:1800,height:1400},frame={...card('group',100,100),type:'frame',frame:'outer',width:1200,height:900}
+  const ink={id:'drawing',type:'pen',x:0,y:0,width:1600,height:700,z:0,points:[[0,0],[1,1]],points3d:[[0,0,0],[1600,700,0]]}
+  const nodes=['a','b','c','d'].map(id=>card(id,0,0,{frame:'group'})),edges=[{...link('ab','a','b'),type:'line'},link('bc','b','c'),link('cb','c','b'),{...link('ca','c','a'),type:'line'}]
+  const second=[card('u',2000,0,{structure:{systems:['second']}}),card('v',2200,0,{structure:{systems:['second']}}),link('uv','u','v')]
+  const elements=[outer,frame,ink,...nodes,...edges,...second],before=structuredClone(elements),poses=spaceStructureLayout(elements),moved=applyStructureLayout(elements,poses)
+  assert.deepEqual(spaceStructureLayout([...elements].reverse()),poses)
+  assert.deepEqual(elements,before)
+  assert.equal(poses.has(ink.id),false)
+  assert.deepEqual(moved.find(e=>e.id===ink.id),ink)
+  assert.ok(poses.has('outer')&&poses.has('group'))
+  for(const id of ['a','b','c','d']){
+    const e=moved.find(e=>e.id===id),b=spaceScene({elements:[e]}).bounds
+    assert.equal(e.frame,'group')
+    assert.ok(b.maxY<ink.y||b.minY>ink.y+ink.height,'the module avoids unrelated hand-drawn content')
+    const f=moved.find(e=>e.id==='group')
+    assert.ok(b.minX>=f.x&&b.maxX<=f.x+f.width&&b.minY>=f.y&&b.maxY<=f.y+f.height)
+  }
+  assert.equal(moved.find(e=>e.id==='group').frame,'outer')
+  assert.ok(new Set(nodes.map(e=>poses.get(e.id).z)).size>1,'undirected contacts also create depth')
+  assert.ok((moved.find(e=>e.id==='v').z||0)>(moved.find(e=>e.id==='u').z||0))
+})
+
+test('free drawings without semantic relations stay untouched and malformed relations are ignored', () => {
+  const elements=[card('shape',40,50),{id:'ink',type:'pen',x:0,y:0,width:40,height:40,points:[[0,0],[1,1]]},{...link('bad','missing','shape')},{...link('self','shape','shape')}]
+  assert.deepEqual([...spaceStructureLayout(elements)],[])
+  assert.deepEqual([...spaceStructureLayout(null)],[])
+})
+
+test('500-object relationship layout has bounded optimization work and finite stable output', {timeout:10000}, () => {
+  const nodes=Array.from({length:500},(_,i)=>card('n'+String(i).padStart(3,'0'),i%20*240,Math.floor(i/20)*140)),edges=[]
+  for(let i=1;i<nodes.length;i++)edges.push(link('e'+i,nodes[Math.floor((i-1)/2)].id,nodes[i].id))
+  for(let i=2;i<nodes.length;i+=7)edges.push(link('extra'+i,nodes[i-2].id,nodes[i].id))
+  const elements=[...nodes,...edges],poses=spaceStructureLayout(elements)
+  assert.equal(poses.size,nodes.length)
+  assert.ok([...poses.values()].every(p=>['x','y','z'].every(axis=>Number.isFinite(p[axis])&&Math.abs(p[axis])<1e7)))
+  assert.deepEqual(spaceStructureLayout([...elements].reverse()),poses)
+})
+
+
+test('a rotated frame fits its descendants in saved local UV axes without flattening them', () => {
+  const frame={...card('frame',20,50),type:'frame',width:800,height:600,z:30,rotation:37,rotationX:28,rotationY:-33}
+  const elements=[frame,card('a',0,0,{frame:'frame',rotationX:18,extrusion:70}),card('b',600,0,{frame:'frame',rotationY:-24}),link('ab','a','b')]
+  const moved=applyStructureLayout(elements),f=moved.find(e=>e.id==='frame')
+  for(const field of ['rotation','rotationX','rotationY'])assert.equal(f[field],frame[field])
+  for(const e of moved.filter(e=>e.type==='rect')){
+    const b=spaceScene({elements:[e]}).bounds
+    for(const x of [b.minX,b.maxX])for(const y of [b.minY,b.maxY])for(const z of [b.minZ,b.maxZ]){
+      const local=spaceUnposePoint(f,{x,y,z})
+      assert.ok(local.x>=f.x-1e-5&&local.x<=f.x+f.width+1e-5,'local U projection lies inside the frame')
+      assert.ok(local.y>=f.y-1e-5&&local.y<=f.y+f.height+1e-5,'local V projection lies inside the frame')
+      assert.ok(local.z>f.z,'the frame plane lies behind every descendant along its normal')
+    }
+  }
+  assert.notEqual(moved.find(e=>e.id==='a').z,moved.find(e=>e.id==='b').z)
+  assert.deepEqual(moved.find(e=>e.id==='ab'),elements.find(e=>e.id==='ab'),'bound links retain their durable endpoint geometry')
 })

@@ -1,6 +1,6 @@
 {
   "name": "@dsh-external/dsh-anatomy",
-  "version": "0.20.6",
+  "version": "0.21.0",
   "description": "自由工程画板：二维编辑与 GPU 三维空间共用数据、程序映射和项目版本。",
   "type": "module",
   "main": "./lib/index.js",
@@ -55,7 +55,7 @@
     }
   },
   "scripts": {
-    "test": "node test/e2e.mjs && node --test --test-concurrency=2 test/regressions.mjs test/co-reading.mjs test/semantics.mjs test/board.mjs test/preview.mjs test/reading.mjs test/versions.mjs test/layout.mjs test/mcp.mjs test/math-expressions.mjs test/canvas-edit.mjs test/paper-edit.mjs test/images.mjs test/mcp-images.mjs test/reading-canvas.mjs test/versions-ui-races.mjs test/drawing.mjs test/drawing-client.mjs test/math-client.mjs test/recognition.mjs test/recognition-agent.mjs test/recognition-setup.mjs test/recognition-client.mjs test/recognition-tool.mjs test/space.mjs test/space-input.mjs test/space-client.mjs test/space-paper.mjs && node test/render-smoke.mjs",
+    "test": "node test/e2e.mjs && node --test --test-concurrency=2 test/regressions.mjs test/co-reading.mjs test/semantics.mjs test/board.mjs test/preview.mjs test/reading.mjs test/versions.mjs test/layout.mjs test/mcp.mjs test/math-expressions.mjs test/canvas-edit.mjs test/paper-edit.mjs test/images.mjs test/surface.mjs test/png-surface.mjs test/mcp-images.mjs test/reading-canvas.mjs test/versions-ui-races.mjs test/drawing.mjs test/drawing-client.mjs test/math-client.mjs test/recognition.mjs test/recognition-agent.mjs test/recognition-setup.mjs test/recognition-client.mjs test/recognition-tool.mjs test/space.mjs test/space-input.mjs test/space-client.mjs test/space-paper.mjs && node test/render-smoke.mjs",
     "serve": "node scripts/setup-recognition.mjs serve",
     "recognition:check": "node scripts/setup-recognition.mjs check",
     "recognition:install": "node scripts/setup-recognition.mjs install",
@@ -63,7 +63,7 @@
     "recognition:warmup": "node scripts/setup-recognition.mjs warmup",
     "test:ocr": "python3 -m unittest discover -s test -p test_handwriting.py",
     "mcp": "node scripts/mcp-server.mjs",
-    "test:space:browser": "node test/space-renderer-browser.mjs && node test/space-browser.mjs && node test/space-complex-browser.mjs",
+    "test:space:browser": "node test/space-renderer-browser.mjs && node test/space-browser.mjs && node test/space-complex-browser.mjs && node test/surface-browser.mjs && node test/surface-space-browser.mjs",
     "build:space": "node scripts/build-space.mjs"
   },
   "repository": {

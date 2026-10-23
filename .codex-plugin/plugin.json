@@ -1,6 +1,6 @@
 {
   "name": "anatomy",
-  "version": "0.20.6",
+  "version": "0.21.0",
   "description": "二维工程画板与 GPU 三维空间：共用图元、程序映射、选定历史版本与严格实现校验。",
   "skills": "./skills/",
   "mcpServers": "./.mcp.json",

@@ -121,3 +121,27 @@ test('真实stdio工具读取选定图为ImageContent，完整结构可严格应
   assert.equal(readVersion(dir,first.saved).board.elements[0].image.src,oldBoard.elements[0].image.src)
   assert.ok(readFileSync(join(dir,'body.json'),'utf8').includes(png))
 })
+
+test('局部擦除后的MCP视觉发送实际PNG，不按相同原图合并不同遮罩',async()=>{
+  const {decodePng,maskedImageSource}=await import('../lib/png-surface.js');const {createHash}=await import('node:crypto');
+  const one=picture('masked-one'),two=picture('masked-two'),original=picture('unmasked');
+  for(const e of [one,two,original])e.formulaGraphic={originalImage:{src:e.image.src,width:3,height:2}};
+  one.erasures=[{surface:'body',points:[[1/6,.25]],radius:[.1,.1]}];two.erasures=[{surface:'body',points:[[5/6,.75]],radius:[.1,.1]}];
+  const value={ok:true,version:{board:{version:1,elements:[one,two,original]}}},before=JSON.stringify(value),wrapped=mcpToolResult('anatomy_selected_version',value),images=imageBlocks(wrapped),contexts=wrapped.content.filter(b=>b.type==='text'&&b.text.includes('boardImage')).map(b=>JSON.parse(b.text).boardImage);
+  assert.equal(images.length,3);assert.equal(JSON.stringify(value),before);assert.equal(wrapped.structuredContent,value);
+  for(const [index,e]of [one,two,original].entries()){
+    const expected=maskedImageSource(e).split(',')[1];assert.equal(images[index].data,expected);assert.equal(contexts[index].sha256,createHash('sha256').update(Buffer.from(expected,'base64')).digest('hex'));assert.equal(contexts[index].nodes[0].element,e.id);
+  }
+  assert.notEqual(images[0].data,png);assert.notEqual(images[1].data,png);assert.notEqual(images[0].data,images[1].data);assert.equal(images[2].data,png);
+  const first=decodePng(Buffer.from(images[0].data,'base64')),second=decodePng(Buffer.from(images[1].data,'base64'));const alpha=(image,u,v)=>image.data[(Math.floor(v*image.height)*image.width+Math.floor(u*image.width))*4+3];assert.equal(alpha(first,1/6,.25),0);assert.equal(alpha(first,5/6,.75),255);assert.equal(alpha(second,1/6,.25),255);assert.equal(alpha(second,5/6,.75),0);assert.equal(contexts[0].width,first.width);assert.equal(contexts[0].height,first.height);assert.ok(first.width>3&&first.height>2);
+  assert.ok(contexts[0].nodes[0].erased);assert.ok(!wrapped.content.filter(b=>b.type==='text').some(b=>b.text.includes(png)));
+  const digest=mcpToolResult('anatomy_digest',{ok:true,text:'## 自由画板与程序映射\n- 图元 masked-one：'+JSON.stringify(one)+'\n## 其他'});assert.equal(imageBlocks(digest)[0].data,images[0].data);
+});
+
+test('有擦痕的WebP和无法解码的PNG不发送原始视觉，数据仍完整保留',()=>{
+  for(const element of [picture('masked-webp','webp',webp),picture('masked-invalid','png',png)]){
+    element.erasures=[{surface:'body',points:[[.5,.5]],radius:[.2,.2]}];
+    if(element.id==='masked-invalid'){const bytes=Buffer.from(png,'base64');bytes[28]=1;element.image.src='data:image/png;base64,'+bytes.toString('base64')}
+    const value={ok:true,board:{elements:[element]}},before=JSON.stringify(value),wrapped=mcpToolResult('anatomy_board',value);assert.equal(imageBlocks(wrapped).length,0);assert.equal(JSON.stringify(value),before);assert.ok(wrapped.content.some(b=>b.type==='text'&&b.text.includes('未附加原图')));
+  }
+});

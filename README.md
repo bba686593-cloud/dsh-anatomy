@@ -58,7 +58,7 @@ codex plugin add anatomy@anatomy-local
 
 让 AI「用 Anatomy 画出这个工程」，在画板上修改并保存，再告诉 AI「按当前选定版本实现」。
 
-三维中，左键绘制或操作对象；右键拖动旋转视角，中键拖动平移视角，滚轮缩放视角。组件附在笔尖后可用 WASD／Q／E 移动，I／K、J／U、Z／X 分别绕 X、Y、Z 轴旋转，Enter 放置。完整操作见画板内「操作说明」。
+三维中，左键绘制或操作对象；右键拖动旋转视角，中键拖动平移视角，滚轮缩放视角。组件附在笔尖后可用 WASD／Q／E 移动，I／K、J／U、Z／X 分别绕 X、Y、Z 轴旋转，Enter 放置。Alt＋点击循环选择重叠内容，局部橡皮可擦文字、图片、形状与三维实体；「关系布局」按部位联系建立立体结构，减少交叉，先预览再应用。完整操作见画板内「操作说明」。
 
 [下载发布包](https://github.com/bba686593-cloud/dsh-anatomy/releases/latest) · [使用与开发参考](docs/REFERENCE.md) · [更新记录](CHANGELOG.md) · [桌面启动入口](native/README.md)
 

@@ -8,7 +8,8 @@ import { boardDiagnostics, deleteElements, elementMathEntries } from '../lib/boa
 import { drawingStaleInk, drawingClientSource } from '../lib/drawing.js'
 import { parseImageSource } from '../lib/images.js'
 import { partTitle } from '../lib/reading.js'
-import { autoDepth, isSpaceLink, spaceLinks, spaceTranslateElement, spaceStrokePoints, spaceClipStroke, spacePenRig, spacePenLengths, spacePenPoint, spaceRotateVector, spacePosePoint, spaceUnposePoint, spaceShapeOutline } from '../lib/board-space.js'
+import { appendSurfaceErasure, surfaceErased, surfaceVisualSource } from '../lib/surface.js'
+import { autoDepth, spaceStructureLayout, isSpaceLink, spaceLinks, spaceTranslateElement, spaceStrokePoints, spaceClipStroke, spacePenRig, spacePenLengths, spacePenPoint, spaceRotateVector, spacePosePoint, spaceUnposePoint, spaceShapeOutline } from '../lib/board-space.js'
 
 const controller = readFileSync(new URL('../lib/board-space-client.js', import.meta.url), 'utf8')
 const keyboardInput = readFileSync(new URL('../lib/board-space-input.js', import.meta.url), 'utf8')
@@ -118,7 +119,7 @@ function runtime(elements = [card()], options = {}) {
     graphicBusy: false, drag: null, polygon: [], tool: 'select',
     A: { organs: [], flows: [], body: { slug: 'controller-test' }, anatomyHash: 'source-hash' },
     surface: node('surface'), versionSession: { selected: { id: 'v1', revision: 'r1' }, versions: [], busy: false },
-    $: node, boardDiagnostics, deleteElements, drawingStaleInk, autoDepth, isSpaceLink, spaceLinks, spaceTranslateElement, spaceStrokePoints, spaceClipStroke, spacePenRig, spacePenLengths, spacePenPoint, spaceRotateVector, spacePosePoint, spaceUnposePoint, spaceShapeOutline,
+    $: node, boardDiagnostics, deleteElements, drawingStaleInk, appendSurfaceErasure, surfaceErased, surfaceVisualSource, autoDepth, spaceStructureLayout, isSpaceLink, spaceLinks, spaceTranslateElement, spaceStrokePoints, spaceClipStroke, spacePenRig, spacePenLengths, spacePenPoint, spaceRotateVector, spacePosePoint, spaceUnposePoint, spaceShapeOutline,
     inlineWritingOpen: () => false, canvasDraftPending: () => false, readingDraftChanged: () => false,
     finishInlineWriting: () => true, editingTarget: value => !!value?.editing,
     readingActive: () => false, readingIndex: -1,
@@ -1874,30 +1875,53 @@ test('recognition refuses more than 500 semantic sources without submitting or c
   assert.deepEqual(plain(r.board), original)
 })
 
-test('结构分层先预览，取消保留原位，应用只记一步且不改变固定四角',()=>{
-  const r=runtime([card('a'),card('b',{x:300}),{id:'ab',type:'arrow',from:'a',to:'b',x:0,y:0,width:1,height:1,text:'传递输入'}]),c=r.context
-  const before=JSON.stringify(r.board),rig=JSON.stringify(c.spaceState.penRig.anchors)
+test('关系空间布局先预览 XYZ，取消保留原稿，应用与撤销只记一步且四角固定',()=>{
+  const elements=[card('frame',{type:'frame',x:0,y:0,width:1200,height:800,rotation:25,rotationX:12,rotationY:-18}),card('root',{x:400,y:350,frame:'frame'}),...['a','b','c'].map(id=>card(id,{frame:'frame'})),
+    card('ink',{type:'pen',x:0,y:250,width:100,height:70,z:20,rotation:23,rotationX:-15,points:[[0,0],[1,1]],points3d:[[0,250,20],[100,320,50]],frame:'frame'}),
+    ...['a','b','c','ink'].map(id=>({id:'root-'+id,type:'arrow',from:'root',to:id,x:0,y:0,width:1,height:1,text:'传递输入'}))]
+  const r=runtime(elements),c=r.context,before=plain(r.board),rig=plain(c.spaceState.penRig.anchors)
   r.click('space-layers')
   assert.equal(r.node('space-layer-preview-dialog').open,true)
-  assert.equal(JSON.stringify(r.board),before)
+  assert.deepEqual(plain(r.board),before)
   assert.equal(r.history.length,0)
-  assert.ok(r.rendererCalls.at(-1).board.elements.find(e=>e.id==='b').z>0)
+  const preview=plain(r.rendererCalls.at(-1).board)
+  for(const axis of ['x','y','z'])assert.ok(before.elements.some(e=>e.type!=='frame'&&preview.elements.find(p=>p.id===e.id)[axis]!==e[axis]),axis+' changes in the preview')
+  const oldInk=before.elements.find(e=>e.id==='ink'),newInk=preview.elements.find(e=>e.id==='ink')
+  for(let i=0;i<oldInk.points3d.length;i++)for(const [index,axis] of ['x','y','z'].entries())near(newInk.points3d[i][index]-oldInk.points3d[i][index],newInk[axis]-oldInk[axis])
+  for(const axis of ['rotation','rotationX','rotationY'])assert.equal(preview.elements.find(e=>e.id==='frame')[axis],before.elements.find(e=>e.id==='frame')[axis])
+  assert.notEqual(preview.elements.find(e=>e.id==='frame').width,before.elements.find(e=>e.id==='frame').width)
+  for(const edge of before.elements.filter(e=>e.type==='arrow'))assert.deepEqual(preview.elements.find(e=>e.id===edge.id),edge,'layout leaves bound connector geometry and identities intact')
   assert.equal(c.spaceCanEdit(),false)
   r.click('space-layer-preview-cancel')
-  assert.equal(JSON.stringify(r.rendererCalls.at(-1).board),before)
+  assert.deepEqual(r.rendererCalls.at(-1).board,before)
+  assert.deepEqual(plain(r.board),before)
   assert.equal(r.history.length,0)
   r.click('space-layers');r.click('space-layer-preview-apply')
-  assert.ok(r.board.elements.find(e=>e.id==='b').z>0)
+  assert.deepEqual(plain(r.board),preview)
   assert.equal(r.history.length,1)
-  assert.equal(JSON.stringify(c.spaceState.penRig.anchors),rig)
+  assert.deepEqual(plain(c.spaceState.penRig.anchors),rig)
   c.undo();r.flush()
-  assert.equal(JSON.stringify(r.board),before)
+  assert.deepEqual(plain(r.board),before)
+  assert.deepEqual(r.rendererCalls.at(-1).board,before)
+  assert.equal(r.history.length,0)
+  c.redo();r.flush()
+  assert.deepEqual(plain(r.board),preview)
+  assert.equal(r.history.length,1)
+})
+
+test('a changed source invalidates a relationship preview before it can overwrite newer content',()=>{
+  const r=runtime([card('a'),card('b',{x:300}),{id:'ab',type:'arrow',from:'a',to:'b',x:0,y:0,width:1,height:1}]),c=r.context
+  const before=plain(r.board)
   r.click('space-layers');c.change(()=>{c.board.elements[0].text='另一页面的新说明'});r.flush()
   assert.equal(c.spaceState.depthPreview,null)
   assert.equal(r.node('space-layer-preview-dialog').open,false)
   assert.equal(r.board.elements[0].text,'另一页面的新说明')
-  assert.equal(r.board.elements[1].z,undefined)
+  for(let i=0;i<before.elements.length;i++)for(const axis of ['x','y','z'])assert.equal(r.board.elements[i][axis],before.elements[i][axis])
+  r.click('space-layer-preview-apply')
+  assert.equal(r.board.elements[0].text,'另一页面的新说明')
+  assert.equal(r.history.length,1,'only the external content change is durable')
 })
+
 
 test('关系识别跟随实际避让标签，标签位置改变使旧候选失效，收起时提示聚焦',()=>{
   const r=recognitionRuntime([card('from'),card('to',{x:400}),{id:'ab',type:'arrow',from:'from',to:'to',x:0,y:0,width:1,height:1,text:'完整关系说明'}]),c=r.context
@@ -1930,3 +1954,30 @@ test('分区识别仍覆盖分区内的内容，普通形状保留真实轮廓�
   assert.ok(c.spaceRecognitionScope().originals.some(e=>e.id==='inner'))
   assert.equal(c.spaceRecognitionOutline(c.get('ellipse')).length,64)
 })
+
+
+test('3D partial erasure modifies all sampled surfaces and keeps object identities until one shared Undo',()=>{
+  const r=runtime([card('front'),card('back',{z:-100}),{id:'relation',type:'arrow',x:0,y:0,width:200,height:80,text:'说明'}]),before=plain(r.board)
+  const samples=[{id:'front',surface:'body',points:[[.4,.5,.2]],radius:[.1,.15,.1]},{id:'back',surface:'body',points:[[.4,.5,.2]],radius:[.1,.15,.1]},{id:'relation',surface:'label',points:[[.5,.5]],radius:[.1,.15]}]
+  r.engine.eraseSamples=()=>samples
+  r.context.setTool('eraser');r.node('eraser-size').value='24'
+  r.pointer('pointerdown');r.pointer('pointerup')
+  assert.deepEqual(r.board.elements.map(e=>e.id),before.elements.map(e=>e.id))
+  for(const sample of samples){
+    const e=r.board.elements.find(e=>e.id===sample.id)
+    assert.equal(e.erasures.length,1,'identical samples do not add redundant holes')
+    assert.equal(surfaceErased(e,sample.points[0],sample.surface),true)
+    assert.equal(surfaceErased(e,[.9,.9,.9],sample.surface),false)
+    assert.equal(e.text,before.elements.find(old=>old.id===sample.id).text)
+  }
+  assert.equal(r.history.length,1)
+  assert.deepEqual(boardDiagnostics(r.board),[])
+  r.key('z',{ctrlKey:true})
+  assert.deepEqual(plain(r.board),before)
+})
+
+test('快速橡皮拖动跨过空间笔迹时沿整条鼠标路径擦除，端点均未触碰也能切开',()=>{
+  const ink={id:'sweep-ink',type:'pen',x:0,y:50,z:0,width:100,height:1,points:[[0,0],[1,0]],points3d:[[0,50,0],[100,50,0]],strokeWidth:3,text:''},r=runtime([ink]),before=plain(r.board);
+  r.context.setTool('eraser');r.node('eraser-size').value='10';r.pointer('pointerdown',{clientX:150,clientY:80});assert.deepEqual(plain(r.board),before);r.pointer('pointermove',{clientX:150,clientY:180});r.pointer('pointerup',{clientX:150,clientY:180});
+  assert.equal(r.board.elements.length,2);const runs=r.board.elements.map(e=>spaceStrokePoints(e));assert.ok(runs[0].at(-1).x<50);assert.ok(runs[1][0].x>50);assert.equal(r.history.length,1);r.key('z',{ctrlKey:true});assert.deepEqual(plain(r.board),before);
+});

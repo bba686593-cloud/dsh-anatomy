@@ -5,6 +5,7 @@ import { deflateSync } from 'node:zlib'
 import { renderAnatomy } from '../lib/render.js'
 import { boardDiagnostics } from '../lib/board.js'
 import { localToWorld } from '../lib/drawing.js'
+import { surfaceErased } from '../lib/surface.js'
 const plain=v=>JSON.parse(JSON.stringify(v));
 const mapping={implementation:{language:'JavaScript',code:'process(input)',note:'处理输入',extra:7},anchors:[{file:'lib/board.js',sha256:'a'.repeat(64),role:'implementation'}],targets:[],custom:{keep:true}};
 const rect={id:'box',type:'rect',x:100,y:100,width:300,height:180,text:'处理输入',math:'y=ax',mathExpressions:[{id:'extra',value:'x>0',metadata:{keep:true}}],fill:'#eff6ff',stroke:'#6366f1',...mapping};
@@ -27,7 +28,7 @@ function runtime(elements=[rect,pen],options={}){
  if(options.lassoUI){const toolbar=node('canvas-tools');toolbar.querySelectorAll=selector=>selector==='[data-canvas-action]'?Object.values(toolbarActions):selector==='[data-single]'?Object.values(toolbarActions).filter(b=>b.hasAttribute('data-single')):[];toolbar.querySelector=selector=>selector==='.canvas-more'?node('canvas-more'):null}
  const imageRequests=[],canvasLog=[];
  class FixtureImage{set src(value){this._src=value;this._paint=0;imageRequests.push(this)}get src(){return this._src}}
- document.createElement=()=>{const canvas={width:3,height:2,_paint:0,toDataURL(){return fixturePNG(this.width,this.height,this._paint)},getContext(){return ctx}};let matrix=[1,0,0,1,0,0],path=[];const stack=[],record=(kind,extra={})=>canvasLog.push({kind,matrix:[...matrix],path:plain(path),lineWidth:ctx.lineWidth,font:ctx.font,width:canvas.width,height:canvas.height,...extra}),multiply=([a,b,c,d,e,f])=>{const [u,v,w,z,x,y]=matrix;matrix=[u*a+w*b,v*a+z*b,u*c+w*d,v*c+z*d,u*e+w*f+x,v*e+z*f+y]};const ctx={drawImage(image,...args){record('drawImage',{src:image.src,args});canvas._paint=image._paint||0},fillText(value,x,y,maxWidth){record('fillText',{value,x,y,maxWidth});canvas._paint++},measureText(value){return {width:value.length*12}},save(){stack.push([...matrix])},restore(){matrix=stack.pop()||matrix},scale(x,y){multiply([x,0,0,y,0,0])},translate(x,y){multiply([1,0,0,1,x,y])},rotate(angle){const c=Math.cos(angle),s=Math.sin(angle);multiply([c,s,-s,c,0,0])},beginPath(){path=[]},closePath(){path.push({kind:'close'})},rect(x,y,width,height){path.push({kind:'rect',x,y,width,height})},clip(rule){record('clip',{rule})},moveTo(x,y){path.push({kind:'move',x,y})},lineTo(x,y){path.push({kind:'line',x,y})},arc(x,y,radius){path.push({kind:'arc',x,y,radius})},stroke(){record('stroke');canvas._paint++},fill(){record('fill');canvas._paint++},fillRect(){},getImageData(){return {data:Uint8ClampedArray.of(0,0,0,255)}}};return canvas};
+ document.createElement=()=>{const canvas={width:3,height:2,_paint:0,toDataURL(){return fixturePNG(this.width,this.height,this._paint)},getContext(){return ctx}};let matrix=[1,0,0,1,0,0],path=[];const stack=[],record=(kind,extra={})=>canvasLog.push({kind,matrix:[...matrix],path:plain(path),lineWidth:ctx.lineWidth,font:ctx.font,composite:ctx.globalCompositeOperation||'source-over',width:canvas.width,height:canvas.height,...extra}),multiply=([a,b,c,d,e,f])=>{const [u,v,w,z,x,y]=matrix;matrix=[u*a+w*b,v*a+z*b,u*c+w*d,v*c+z*d,u*e+w*f+x,v*e+z*f+y]};const ctx={drawImage(image,...args){record('drawImage',{src:image.src,args});canvas._paint=image._paint||0},fillText(value,x,y,maxWidth){record('fillText',{value,x,y,maxWidth});canvas._paint++},measureText(value){return {width:value.length*12}},save(){stack.push([...matrix])},restore(){matrix=stack.pop()||matrix},scale(x,y){multiply([x,0,0,y,0,0])},translate(x,y){multiply([1,0,0,1,x,y])},rotate(angle){const c=Math.cos(angle),s=Math.sin(angle);multiply([c,s,-s,c,0,0])},beginPath(){path=[]},closePath(){path.push({kind:'close'})},rect(x,y,width,height){path.push({kind:'rect',x,y,width,height})},clip(rule){record('clip',{rule})},moveTo(x,y){path.push({kind:'move',x,y})},lineTo(x,y){path.push({kind:'line',x,y})},arc(x,y,radius){path.push({kind:'arc',x,y,radius})},stroke(){record('stroke');canvas._paint++},fill(){record('fill');canvas._paint++},fillRect(){},getImageData(){return {data:Uint8ClampedArray.of(0,0,0,255)}}};return canvas};
  const context={document,window:{addEventListener(){}},structuredClone,AbortController,Blob,URL,console,Image:FixtureImage,setTimeout:()=>0,clearTimeout(){},localStorage:{getItem:k=>storage.get(k),setItem:(k,v)=>storage.set(k,v),removeItem:k=>storage.delete(k)},fetch:options.fetch|| (async()=>({ok:true,json:async()=>({service:'anatomy-handwriting',ready:true})}))};
  const html=renderAnatomy({slug:'drawing-test',title:'自由绘图验证',board:{version:1,elements:structuredClone(elements),layout:{mode:'manual'}}},[],[]);vm.runInNewContext(html.match(/<script>([\s\S]*)<\/script>/)[1],context);
  // Existing drawing assertions explicitly use the legacy local OCR boundary.
@@ -53,15 +54,16 @@ test('局部橡皮切开真实笔迹且映射不丢，完整擦除拖动可一�
  assert.equal(r.api.board.elements.length,2);for(const e of r.api.board.elements){assert.deepEqual(plain(e.anchors),mapping.anchors);assert.deepEqual(plain(e.implementation),mapping.implementation);assert.deepEqual(plain(e.custom),mapping.custom)}
  const cut=plain(r.api.board);r.api.undo();assert.deepEqual(plain(r.api.board),before);r.api.redo();assert.deepEqual(plain(r.api.board),cut);
 });
-test('擦掉框线只切边框，文字公式拆开继续留在纸上，并可完整撤销',()=>{
+test('擦掉框线保持同一对象，局部孔洞与文字公式一起移动并可完整撤销',()=>{
  const r=runtime([rect]),before=plain(r.api.board);r.api.setTool('eraser');r.pointer('pointerdown',240,100);r.pointer('pointerup',240,100);
- const children=r.api.board.elements.filter(e=>e.derivedFrom==='box');assert.equal(children.length,3);assert.ok(children.some(e=>e.text==='处理输入'));assert.ok(children.some(e=>e.math==='y=ax'));assert.ok(children.some(e=>e.math==='x>0'));
- for(const e of children)assert.deepEqual(plain(e.anchors),mapping.anchors);assert.ok(r.api.board.elements.some(e=>e.type==='pen'&&e.id==='box'));r.api.undo();assert.deepEqual(plain(r.api.board),before);
+ assert.equal(r.api.board.elements.length,1);const e=r.api.board.elements[0];assert.equal(e.id,'box');assert.equal(e.type,'rect');assert.equal(e.text,rect.text);assert.equal(e.math,rect.math);assert.deepEqual(plain(e.mathExpressions),rect.mathExpressions);assert.ok(surfaceErased(plain(e),[(240-e.x)/e.width,0]));assert.equal(surfaceErased(plain(e),[.9,.8]),false);assert.match(r.node('world').innerHTML,/mask="url\(#erase-box-body\)"/);assert.deepEqual(plain(e.anchors),mapping.anchors);r.api.undo();assert.deepEqual(plain(r.api.board),before);
 });
-test('橡皮擦正文与一条公式只修改命中内容，不意外删除框或其他表达',()=>{
- const r=runtime([rect]);r.api.setTool('eraser');r.pointer('pointerdown',220,165,r.target('box','text'));r.pointer('pointerup',220,165);assert.equal(r.api.board.elements[0].text,'');assert.equal(r.api.board.elements[0].math,'y=ax');
- r.pointer('pointerdown',240,200,r.target('box','extra'));r.pointer('pointerup',240,200);assert.equal(r.api.board.elements[0].mathExpressions.length,0);assert.equal(r.api.board.elements[0].type,'rect');assert.deepEqual(plain(r.api.board.elements[0].anchors),mapping.anchors);
+
+test('橡皮擦正文与公式只擦经过的局部，不清空原表达或拆开图层',()=>{
+ const r=runtime([rect]);r.api.setTool('eraser');r.pointer('pointerdown',220,165,r.target('box','text'));r.pointer('pointerup',220,165);r.pointer('pointerdown',240,200,r.target('box','extra'));r.pointer('pointerup',240,200);
+ const e=plain(r.api.board.elements[0]);assert.equal(e.text,rect.text);assert.equal(e.math,rect.math);assert.deepEqual(e.mathExpressions,rect.mathExpressions);assert.equal(e.type,'rect');assert.ok(surfaceErased(e,[.4,65/180]));assert.ok(surfaceErased(e,[140/300,100/180]));assert.equal(surfaceErased(e,[.8,.8]),false);assert.deepEqual(e.anchors,mapping.anchors);
 });
+
 test('选中即显示八方向控制点，拖动西北手柄保持对角不动及完整机读字段',()=>{
  const r=runtime([rect]);r.api.select('box');assert.equal((r.node('world').innerHTML.match(/data-handle=/g)||[]).length,8);
  const h={closest(sel){return sel==='[data-resize],[data-rotate],[data-vertex],[data-endpoint]'?{hasAttribute:()=>false,getAttribute:k=>k==='data-resize'?'box':k==='data-handle'?'nw':null}:null}};
@@ -100,30 +102,34 @@ test('已识别公式点击只选择PNG图形，文字编辑层不出现LaTex或
 test('选择整图元橡皮时删除端点会解除连线绑定，并撤销恢复完整数据',()=>{
  const line={id:'link',type:'arrow',x:100,y:100,width:400,height:0,from:'box',text:'传递结果'},r=runtime([rect,line]);r.node('eraser-mode').value='object';r.api.setTool('eraser');r.pointer('pointerdown',250,190,r.target('box'));r.pointer('pointerup',250,190);assert.equal(r.api.board.elements.length,1);assert.equal(r.api.board.elements[0].from,undefined);r.api.undo();assert.equal(r.api.board.elements[1].from,'box');
 });
-test('擦主公式原笔迹保留正文和附加数学元数据，单点笔迹不消失',()=>{
+test('擦公式原笔迹使用同一局部表面，单点与原表达来源完整保留',()=>{
  const h={mode:'math',reviewedValue:'y=ax',strokes:[[[0,0],[100,0]],[[50,30]]]},e={...rect,type:'math',math:'y=ax',mathDisplay:'ink',mathHandwriting:h,extension:{sourceKey:'必须保留'}};
  const r=runtime([e]);assert.match(r.node('world').innerHTML,/<circle cx="50" cy="30"/);r.api.drawing.erase({x:220,y:100});
- assert.ok(r.api.board.elements.some(e=>e.text==='处理输入'));assert.ok(r.api.board.elements.some(e=>e.math==='x>0'));const pens=r.api.board.elements.filter(e=>e.type==='pen');assert.ok(pens.length>=3);for(const p of r.api.board.elements)assert.deepEqual(plain(p.extension),{sourceKey:'必须保留'});assert.equal(boardDiagnostics(plain(r.api.board)).length,0);
+ assert.equal(r.api.board.elements.length,1);const erased=plain(r.api.board.elements[0]);assert.equal(erased.text,'处理输入');assert.deepEqual(erased.mathHandwriting,h);assert.deepEqual(erased.mathExpressions,e.mathExpressions);assert.deepEqual(erased.extension,e.extension);assert.ok(surfaceErased(erased,[.4,0]));assert.equal(boardDiagnostics(plain(r.api.board)).length,0);
 });
-test('框内部原笔迹与附加原笔迹可以拆开再擦，保留其他表达和来源',()=>{
- const h={mode:'math',reviewedValue:'y=ax',strokes:[[[0,0],[100,0]]]},r=runtime([{...rect,math:'y=ax',mathDisplay:'ink',mathHandwriting:h}]);r.api.setTool('eraser');r.pointer('pointerdown',220,178,r.target('box','primary'));r.pointer('pointerup',220,178);assert.ok(r.api.board.elements.some(e=>e.id==='box'&&e.type==='rect'));assert.ok(r.api.board.elements.some(e=>e.math==='x>0'));assert.equal(boardDiagnostics(plain(r.api.board)).length,0);
+
+test('框内部原笔迹与附加原笔迹不拆分，橡皮保持稳定对象身份',()=>{
+ const h={mode:'math',reviewedValue:'y=ax',strokes:[[[0,0],[100,0]]]},r=runtime([{...rect,math:'y=ax',mathDisplay:'ink',mathHandwriting:h}]);r.api.setTool('eraser');r.pointer('pointerdown',220,178,r.target('box','primary'));r.pointer('pointerup',220,178);assert.equal(r.api.board.elements.length,1);const e=plain(r.api.board.elements[0]);assert.equal(e.id,'box');assert.equal(e.type,'rect');assert.deepEqual(e.mathHandwriting,h);assert.deepEqual(e.mathExpressions,rect.mathExpressions);assert.ok(surfaceErased(e,[.4,78/180]));assert.equal(boardDiagnostics(plain(r.api.board)).length,0);
 });
-test('整圈外框擦掉后，文字与公式继续保留全部未知元数据',()=>{
- const e={...rect,extension:{sourceKey:'必须保留'},unrecognized:{origin:17}},r=runtime([e]);r.node('eraser-size').value='1000';r.api.drawing.erase({x:250,y:190});assert.equal(r.api.board.elements.length,3);for(const child of r.api.board.elements){assert.deepEqual(plain(child.extension),e.extension);assert.deepEqual(plain(child.unrecognized),e.unrecognized);assert.deepEqual(plain(child.anchors),e.anchors)}
+
+test('整片内容擦掉仍保留原对象的来源与未知元数据，撤销可恢复',()=>{
+ const e={...rect,extension:{sourceKey:'必须保留'},unrecognized:{origin:17}},r=runtime([e]);r.node('eraser-size').value='1000';r.api.drawing.erase({x:250,y:190});assert.equal(r.api.board.elements.length,1);const erased=plain(r.api.board.elements[0]);assert.deepEqual(erased.extension,e.extension);assert.deepEqual(erased.unrecognized,e.unrecognized);assert.deepEqual(erased.anchors,e.anchors);assert.equal(erased.text,e.text);assert.ok(surfaceErased(erased,[0,0]));assert.ok(surfaceErased(erased,[1,1]));r.api.undo();assert.deepEqual(plain(r.api.board.elements[0]),e);
 });
+
 test('没有真实笔画的打印公式不能切原稿，手写面板保留笔迹无需任何识别结果',()=>{
  const e={...rect,type:'math',math:'y=ax',mathHandwriting:{mode:'math',strokes:[]}},r=runtime([e]);r.api.select('box');assert.equal(r.node('toggle-ink').hidden,true);r.api.drawing.toggleInk();assert.equal(r.api.board.elements[0].mathDisplay,undefined);
  r.api.select(null);r.api.math.openHandwriting({mode:'math'});const before=plain(r.api.board),event=(x,y)=>({button:0,pointerId:5,clientX:x,clientY:y,preventDefault(){}});r.fire('ink-pad','pointerdown',event(100,100));r.fire('ink-pad','pointermove',event(300,150));r.fire('ink-pad','pointerup',event(300,150));r.fire('ink-keep','click');assert.equal(r.api.board.elements.length,before.elements.length+1);const added=r.api.board.elements.at(-1);assert.equal(added.type,'pen');assert.equal(added.math,'');assert.equal(added.recognition,undefined);r.api.undo();assert.deepEqual(plain(r.api.board),before);
 });
-test('复合公式首次擦除沿旧SVG真实坐标命中，拆分尚未重绘也不会落空',()=>{
+test('复合公式首次擦除不依赖旧DOM，原笔迹与其他公式保持同一载体',()=>{
  const h={mode:'math',reviewedValue:'y=ax',strokes:[[[10,10],[110,10]]]},r=runtime([{...rect,math:'y=ax',mathDisplay:'ink',mathHandwriting:h}]),v=r.api.view;
  const n={getBoundingClientRect:()=>({left:v.x+150*v.scale,top:v.y+160*v.scale,right:v.x+350*v.scale,bottom:v.y+210*v.scale}),getAttribute:()=> 'primary',querySelector:()=>({getScreenCTM:()=>({a:v.scale,b:0,c:0,d:v.scale,e:v.x+140*v.scale,f:v.y+170*v.scale})})};
- r.node('world').querySelectorAll=selector=>selector.includes('data-id="box"')?[n]:[];r.api.setTool('eraser');r.pointer('pointerdown',190,180,r.target('box','primary'));r.pointer('pointerup',190,180);assert.ok(r.api.board.elements.filter(e=>e.type==='pen').length>=2);assert.ok(r.api.board.elements.some(e=>e.id==='box'&&e.type==='rect'));assert.ok(r.api.board.elements.some(e=>e.math==='x>0'));assert.equal(boardDiagnostics(plain(r.api.board)).length,0);
+ r.node('world').querySelectorAll=selector=>selector.includes('data-id="box"')?[n]:[];r.api.setTool('eraser');r.pointer('pointerdown',190,180,r.target('box','primary'));r.pointer('pointerup',190,180);assert.equal(r.api.board.elements.length,1);const e=plain(r.api.board.elements[0]);assert.equal(e.id,'box');assert.equal(e.type,'rect');assert.ok(surfaceErased(e,[.3,80/180]));assert.deepEqual(e.mathHandwriting,h);assert.equal(boardDiagnostics(plain(r.api.board)).length,0);
 });
 
 const middleInkRegion=[{x:200,y:330},{x:300,y:330},{x:300,y:370},{x:200,y:370}];
 const response=data=>({ok:true,json:async()=>data});
 const graphicFixture=()=>({id:'formula',type:'image',x:100,y:100,width:60,height:40,text:'',math:'',fill:'none',stroke:'#18233b',...plain(mapping),image:{src:fixtureRaster.src,width:3,height:2,alt:'数学图形'},formulaGraphic:{version:1,originalMath:'y=ax',currentMath:'y=ax',semanticStatus:'source-aligned',originalImage:{src:fixtureRaster.src,width:3,height:2},renderer:{name:'MathJax SVG',version:'3.2.2'},edits:[]}});
+
 
 test('套索只识别穿过圈内的笔迹段，圈外两段、映射、原稿与连线绑定保持',async()=>{
  const link={id:'link',type:'arrow',x:100,y:350,width:100,height:100,from:'ink',text:'关联原笔迹'},r=runtime([pen,link]),before=plain(r.api.board);
@@ -168,16 +174,16 @@ test('图形转换等待时撤销排在转换事务之后，重做恢复PNG及�
  await r.fire('surface','dblclick',{clientX:200*v.scale+v.x,clientY:150*v.scale+v.y,target:r.target('printed','primary')});await Promise.resolve();r.api.undo();assert.deepEqual(plain(r.api.board),before);work.resolve(plain(fixtureRaster));await r.api.graphics.flush();await Promise.resolve();assert.deepEqual(plain(r.api.board),before);r.api.redo();const e=r.api.board.elements[0];assert.equal(e.type,'image');assert.equal(e.formulaGraphic.originalMath,'y=ax');assert.deepEqual(plain(e.formulaGraphic.sourceElement),printed);
 });
 
-test('异步橡皮的最终历史纳入队列，等待期间Undo随后可完整Redo',async()=>{
- const r=runtime([graphicFixture()],{graphics:true}),before=plain(r.api.board);r.api.setTool('eraser');await r.pointer('pointerdown',130,120,r.target('formula'));const ending=r.pointer('pointerup',130,120,r.target('formula'));await Promise.resolve();assert.equal(r.imageRequests.length,1);r.api.undo();r.releaseImages();await ending;await r.api.graphics.flush();await Promise.resolve();assert.deepEqual(plain(r.api.board),before);r.api.redo();const e=r.api.board.elements[0];assert.notEqual(e.image.src,before.elements[0].image.src);assert.equal(e.formulaGraphic.semanticStatus,'needs-review');assert.equal(e.formulaGraphic.currentMath,null);assert.equal(e.formulaGraphic.edits[0].kind,'erase');
+test('局部橡皮无需解码PNG，最终历史仍纳入队列且可完整Redo',async()=>{
+ const r=runtime([graphicFixture()],{graphics:true}),before=plain(r.api.board);r.api.setTool('eraser');await r.pointer('pointerdown',130,120,r.target('formula'));const ending=r.pointer('pointerup',130,120,r.target('formula'));r.api.undo();await ending;await r.api.graphics.flush();await Promise.resolve();assert.equal(r.imageRequests.length,0);assert.deepEqual(plain(r.api.board),before);r.api.redo();const e=plain(r.api.board.elements[0]);assert.equal(e.image.src,before.elements[0].image.src);assert.ok(e.erasures.length);assert.equal(e.formulaGraphic.semanticStatus,'needs-review');assert.equal(e.formulaGraphic.currentMath,null);assert.equal(e.formulaGraphic.edits[0].kind,'erase');assert.equal(boardDiagnostics(plain(r.api.board)).length,0);
 });
 
-test('取消正在等待解码的橡皮拖动恢复原图与原语义，不留下幽灵历史',async()=>{
- const r=runtime([graphicFixture()],{graphics:true}),initial=plain(r.api.board);r.api.change(()=>{r.api.board.elements[0].custom.prior='保留前一步'});const before=plain(r.api.board);r.api.setTool('eraser');await r.pointer('pointerdown',130,120,r.target('formula'));const canceled=r.pointer('pointercancel',130,120,r.target('formula'));await Promise.resolve();r.releaseImages();await canceled;await r.api.graphics.flush();assert.deepEqual(plain(r.api.board),before);r.api.undo();assert.deepEqual(plain(r.api.board),initial);
+test('取消局部橡皮拖动恢复所有遮罩与原公式语义，不留下幽灵历史',async()=>{
+ const r=runtime([graphicFixture()],{graphics:true}),initial=plain(r.api.board);r.api.change(()=>{r.api.board.elements[0].custom.prior='保留前一步'});const before=plain(r.api.board);r.api.setTool('eraser');await r.pointer('pointerdown',130,120,r.target('formula'));await r.pointer('pointercancel',130,120,r.target('formula'));await r.api.graphics.flush();assert.deepEqual(plain(r.api.board),before);r.api.undo();assert.deepEqual(plain(r.api.board),initial);
 });
 
-test('保存等待异步橡皮和最终history完成，写出的PNG与画板一致且可撤销',async()=>{
- let posted=null;const r=runtime([graphicFixture()],{graphics:true,fetch:async(path,options={})=>{if(path==='/api/versions'&&options.method==='POST')posted=JSON.parse(options.body);return path.startsWith('/api/versions')?response({ok:true,selected:{id:'saved',revision:'saved-revision'},versions:[]}):response({service:'anatomy-handwriting',ready:true})}}),before=plain(r.api.board);await r.api.versions.refresh();r.api.setTool('eraser');await r.pointer('pointerdown',130,120,r.target('formula'));const ending=r.pointer('pointerup',130,120,r.target('formula')),saving=r.api.versions.save();await Promise.resolve();assert.equal(posted,null);r.releaseImages();await ending;assert.equal(await saving,true);assert.deepEqual(plain(posted.board),plain(r.api.board));assert.equal(posted.board.elements[0].formulaGraphic.semanticStatus,'needs-review');r.api.undo();assert.deepEqual(plain(r.api.board),before);
+test('保存等待橡皮事务完成，写出的局部遮罩与画板一致且可撤销',async()=>{
+ let posted=null;const r=runtime([graphicFixture()],{graphics:true,fetch:async(path,options={})=>{if(path==='/api/versions'&&options.method==='POST')posted=JSON.parse(options.body);return path.startsWith('/api/versions')?response({ok:true,selected:{id:'saved',revision:'saved-revision'},versions:[]}):response({service:'anatomy-handwriting',ready:true})}}),before=plain(r.api.board);await r.api.versions.refresh();r.api.setTool('eraser');await r.pointer('pointerdown',130,120,r.target('formula'));const ending=r.pointer('pointerup',130,120,r.target('formula')),saving=r.api.versions.save();await ending;assert.equal(await saving,true);assert.deepEqual(plain(posted.board),plain(r.api.board));assert.equal(posted.board.elements[0].image.src,before.elements[0].image.src);assert.ok(posted.board.elements[0].erasures.length);assert.equal(posted.board.elements[0].formulaGraphic.semanticStatus,'needs-review');r.api.undo();assert.deepEqual(plain(r.api.board),before);
 });
 
 test('补画的解码与finalization组成一个图形队列事务，等待时撤销不会错撤上一步',async()=>{
@@ -445,4 +451,102 @@ test('圈选完成的隐藏选择不响应编辑快捷键，复制与全局撤�
  for(const event of [{key:'ArrowRight'},{key:'Delete'},{key:'Backspace'},{key:'d',ctrlKey:true},{key:'a',ctrlKey:true}])await r.dispatchDocument('keydown',event);assert.deepEqual(plain(r.api.board),before);assert.deepEqual(plain(r.api.selected),selected);assert.equal(r.evaluate('tool'),'lasso');assert.match(r.node('toast').textContent,/切换.*选择/);
  let copied;await r.dispatchDocument('copy',{clipboardData:{setData(type,value){if(type==='text/plain')copied=value}}});assert.deepEqual(JSON.parse(copied).elements,[before.elements.find(e=>e.id==='ink')]);assert.deepEqual(plain(r.api.board),before);await r.dispatchDocument('keydown',{key:'z',ctrlKey:true});assert.deepEqual(plain(r.api.board),initial);assert.equal(r.evaluate('tool'),'lasso');await r.dispatchDocument('keydown',{key:'y',ctrlKey:true});assert.deepEqual(plain(r.api.board),before);
  await r.dispatchDocument('keydown',{key:'v'});assert.equal(r.evaluate('tool'),'select');await r.dispatchDocument('keydown',{key:'ArrowRight'});assert.equal(r.api.board.elements.find(e=>e.id==='ink').x,before.elements.find(e=>e.id==='ink').x+1);const moved=plain(r.api.board);await r.dispatchDocument('keydown',{key:'Delete'});assert.equal(r.api.board.elements.some(e=>e.id==='ink'),false);assert.equal(r.api.board.elements.find(e=>e.id==='box').custom.prior,'此前修改');r.api.undo();assert.deepEqual(plain(r.api.board),moved);r.api.undo();assert.deepEqual(plain(r.api.board),before);
+});
+
+// Paint order and overlap selection regressions.
+test('二维统一使用文档笔顺，关系说明随连线置前置后而不独立跳层',()=>{
+ const link={id:'link-order',type:'arrow',x:150,y:120,width:350,height:0,text:'传递结果'},over={...plain(rect),id:'over-order',x:600,text:'后画内容'},r=runtime([rect,link,over]);
+ const visibleOrder=()=>[...r.node('world').innerHTML.matchAll(/<g class="(element[^"]*|relation-label)" data-id="([^"]+)"/g)].map(m=>m[2]+(m[1]==='relation-label'?':label':''));
+ assert.deepEqual(visibleOrder(),['box','link-order','link-order:label','over-order']);
+ r.api.select('link-order');r.evaluate("canvasAction('front')");assert.deepEqual(plain(r.api.board.elements.map(e=>e.id)),['box','over-order','link-order']);assert.deepEqual(visibleOrder(),['box','over-order','link-order','link-order:label']);
+ r.evaluate("canvasAction('back')");assert.deepEqual(visibleOrder(),['link-order','link-order:label','box','over-order']);r.api.undo();assert.deepEqual(visibleOrder(),['box','over-order','link-order','link-order:label']);
+});
+
+test('Alt 点击循环访问重叠笔迹、文字、底部图形与分区，连续点击不误开编辑',async()=>{
+ const bottom={...plain(rect),id:'bottom-overlap'},ink={...plain(pen),id:'ink-overlap',y:190},top={id:'top-overlap',type:'text',x:100,y:100,width:300,height:180,text:'顶端说明'},frame={...plain(rect),id:'frame-overlap',type:'frame'},r=runtime([frame,bottom,ink,top]),before=plain(r.api.board);
+ r.document.elementsFromPoint=()=>[r.target('top-overlap'),r.target('top-overlap'),r.target('ink-overlap'),r.target('bottom-overlap'),r.target('frame-overlap')];
+ const click=async altKey=>{await r.pointer('pointerdown',250,190,r.target('top-overlap'),{altKey});await r.pointer('pointerup',250,190,r.target('top-overlap'),{altKey})};
+ await click(false);assert.deepEqual(plain(r.api.selected),['top-overlap']);
+ for(const id of ['ink-overlap','bottom-overlap','frame-overlap','top-overlap']){await click(true);assert.deepEqual(plain(r.api.selected),[id]);assert.equal(r.api.canvas.draft,null)}
+ await r.fire('surface','dblclick',{clientX:250*r.api.view.scale+r.api.view.x,clientY:190*r.api.view.scale+r.api.view.y,altKey:true,target:r.target('top-overlap')});assert.equal(r.api.canvas.draft,null);assert.deepEqual(plain(r.api.board),before);
+});
+
+test('擦出的孔洞不拦住底下对象，选择仍可穿过同一画面的空白',async()=>{
+ const lower={...plain(rect),id:'lower-hole'},upper={...plain(rect),id:'upper-hole',erasures:[{surface:'body',points:[[.5,.5]],radius:[.15,.15]}]},r=runtime([lower,upper]);
+ r.document.elementsFromPoint=()=>[r.target('upper-hole'),r.target('lower-hole')];await r.pointer('pointerdown',250,190,r.target('upper-hole'));await r.pointer('pointerup',250,190,r.target('upper-hole'));assert.deepEqual(plain(r.api.selected),['lower-hole']);
+});
+
+test('识别替换与圈外残余留在源笔顺位置，不盖住之后画的其他内容',async()=>{
+ for(const region of [fullInkRegion,middleInkRegion]){
+  const below={id:'below-recognition',type:'text',x:0,y:0,width:80,height:40,text:'先画'},above={id:'above-recognition',type:'text',x:600,y:0,width:80,height:40,text:'后画'},r=runtime([below,pen,above]),before=plain(r.api.board);
+  await openLasso(r,region);const outside=plain(r.api.graphics.slices[0].outside);r.node('ink-result').value='y=ax';await r.fire('ink-result','input');const candidate=await r.api.math.applyInkResult();assert.ok(candidate);
+  assert.deepEqual(plain(r.api.board.elements.map(e=>e.id)),['below-recognition',...outside.map(e=>e.id),candidate.id,'above-recognition']);assert.deepEqual(plain(r.api.board.elements.at(-1)),above);r.api.undo();assert.deepEqual(plain(r.api.board),before);
+ }
+});
+
+test('跨多个笔画识别时每个圈外残余保留原位置，汇总结果占最后一个源槽位',async()=>{
+ const below={id:'below-multi',type:'text',x:0,y:0,width:80,height:40,text:'先画'},between={id:'between-multi',type:'text',x:600,y:0,width:80,height:40,text:'中间'},above={...between,id:'above-multi',y:80,text:'后画'},second={...plain(pen),id:'second-multi',y:355},r=runtime([below,pen,between,second,above]);
+ await openLasso(r,middleInkRegion);const slices=plain(r.api.graphics.slices);r.node('ink-result').value='y=ax';await r.fire('ink-result','input');const candidate=await r.api.math.applyInkResult();assert.ok(candidate);
+ assert.deepEqual(plain(r.api.board.elements.map(e=>e.id)),['below-multi',...slices.find(s=>s.original.id==='ink').outside.map(e=>e.id),'between-multi',...slices.find(s=>s.original.id==='second-multi').outside.map(e=>e.id),candidate.id,'above-multi']);
+});
+
+test('补画不吞入被其他对象盖住的旧公式，新笔迹保持最新笔顺并可撤销',async()=>{
+ const source=graphicFixture(),cover={id:'cover-formula',type:'rect',x:105,y:100,width:40,height:40,text:'覆盖部分',fill:'#ffffff'},r=runtime([source,cover],{graphics:true}),before=plain(r.api.board);r.api.setTool('pen');await r.pointer('pointerdown',110,110);await r.pointer('pointermove',130,120);await r.pointer('pointerup',130,120);await r.api.graphics.flush();
+ assert.equal(r.api.board.elements.length,3);assert.deepEqual(plain(r.api.board.elements.slice(0,2)),[source,cover]);assert.equal(r.api.board.elements.at(-1).type,'pen');assert.equal(r.imageRequests.length,0);const drawn=plain(r.api.board);r.api.undo();assert.deepEqual(plain(r.api.board),before);r.api.redo();assert.deepEqual(plain(r.api.board),drawn);
+});
+
+test('有擦痕的公式上补画保留独立新笔，旧擦痕不会抹掉新画内容',async()=>{
+ const source={...graphicFixture(),erasures:[{surface:'body',points:[[.4,.4]],radius:[.3,.3]}]},r=runtime([source],{graphics:true}),before=plain(r.api.board);r.api.setTool('pen');await r.pointer('pointerdown',110,110);await r.pointer('pointermove',130,120);await r.pointer('pointerup',130,120);await r.api.graphics.flush();
+ assert.equal(r.api.board.elements.length,2);assert.deepEqual(plain(r.api.board.elements[0]),source);assert.equal(r.api.board.elements[1].type,'pen');assert.equal(r.api.board.elements[1].erasures,undefined);r.api.undo();assert.deepEqual(plain(r.api.board),before);
+});
+
+
+test('同一橡皮路径擦过重叠文字图片与形状，原对象与笔顺不拆分',()=>{
+ const image={id:'picture',type:'image',x:100,y:100,width:300,height:180,text:'原图片说明',image:{src:fixtureRaster.src,width:3,height:2,alt:'图片'}},text={id:'copy',type:'text',x:100,y:100,width:300,height:180,text:'覆盖在上面的说明'},r=runtime([rect,image,text]),ids=r.api.board.elements.map(e=>e.id),original=plain(r.api.board.elements);
+ r.api.drawing.erase({x:250,y:190});assert.deepEqual(plain(r.api.board.elements.map(e=>e.id)),plain(ids));
+ for(let i=0;i<original.length;i++){const e=plain(r.api.board.elements[i]),masks=e.erasures;delete e.erasures;assert.deepEqual(e,original[i]);assert.ok(surfaceErased({erasures:masks},[.5,.5]));assert.equal(surfaceErased({erasures:masks},[.9,.9]),false)}
+ assert.equal(r.imageRequests.length,0);r.api.undo();assert.deepEqual(plain(r.api.board.elements),original)
+});
+
+test('旋转后局部擦除按物体坐标保存，平移与非等比缩放后擦痕跟随内容',()=>{
+ const e={...plain(rect),rotation:37},r=runtime([e]),at=localToWorld(e,{x:190,y:172});r.api.drawing.erase(at);const erased=plain(r.api.board.elements[0]),masks=plain(erased.erasures);assert.ok(surfaceErased(erased,[.3,.4]));assert.equal(surfaceErased(erased,[.8,.8]),false);
+ r.api.change(()=>{const current=r.api.board.elements[0];current.x+=90;current.y-=40;current.width*=1.7;current.height*=.6;current.rotation=-22});const moved=plain(r.api.board.elements[0]);assert.deepEqual(moved.erasures,masks);
+ const hole=localToWorld(moved,{x:moved.x+moved.width*.3,y:moved.y+moved.height*.4});r.context.erasedWorld=hole;assert.equal(r.evaluate("elementErasureHit(board.elements[0],erasedWorld)"),true);r.api.undo();assert.deepEqual(plain(r.api.board.elements[0]),erased)
+});
+
+test('橡皮局部擦关系说明仍保留连线与绑定，标签遮罩独立随说明布局',()=>{
+ const a={...plain(rect),id:'from'},b={...plain(rect),id:'to',x:700},edge={id:'edge',type:'arrow',x:100,y:100,width:600,height:0,from:'from',to:'to',text:'两个部位之间的关系',...plain(mapping)},r=runtime([a,b,edge]),label=r.evaluate("lineLabels().find(label=>label.id==='edge')");
+ r.api.drawing.erase({x:label.x+label.w/2,y:label.y+label.h/2});const actual=plain(r.api.board.elements.find(e=>e.id==='edge'));assert.equal(actual.from,'from');assert.equal(actual.to,'to');assert.equal(actual.text,edge.text);assert.equal(actual.type,'arrow');assert.ok(surfaceErased(actual,[.5,.5],'label'));assert.match(r.node('world').innerHTML,/erase-edge-label/);assert.deepEqual(actual.anchors,edge.anchors)
+});
+
+test('显式拆分保持每个子内容原处的擦痕位置，不继承错误的归一化尺寸',()=>{
+ const r=runtime([rect]);r.api.drawing.erase({x:240,y:170});const original=plain(r.api.board.elements[0]);r.api.select('box');r.api.drawing.split();const children=plain(r.api.board.elements.filter(e=>e.derivedFrom==='box'));assert.ok(children.length>=3);
+ for(const child of children){const q=localToWorld(original,{x:original.x+.4666666666666667*original.width,y:original.y+70});r.context.childId=child.id;r.context.erasedWorld=q;assert.equal(r.evaluate('elementErasureHit(get(childId),erasedWorld)'),true);assert.deepEqual(child.anchors,original.anchors)}
+});
+
+test('圈内识别取样应用文字与图片的同一局部遮罩，保留源PNG与机读内容',async()=>{
+ const text={id:'words',type:'text',x:100,y:100,width:300,height:180,text:'可见内容只读取未擦部分'},r=runtime([text],{realCapture:true});r.api.drawing.erase({x:250,y:190});const before=plain(r.api.board),slice={original:plain(r.api.board.elements[0]),visual:true,inside:[],outside:[]};r.context.sampleSlice=slice;await r.evaluate('rasterLassoVisual(sampleSlice)');
+ const strokes=r.canvasLog.filter(entry=>entry.kind==='stroke'&&entry.composite==='destination-out');assert.ok(strokes.length);assert.deepEqual(plain(r.api.board),before);
+ const image=graphicFixture(),r2=runtime([image]);r2.api.drawing.erase({x:130,y:120});const masked=plain(r2.api.board);r2.context.imageElement=plain(r2.api.board.elements[0]);const pending=r2.evaluate('graphicCanvas(imageElement)');r2.releaseImages();await pending;assert.ok(r2.canvasLog.some(entry=>entry.kind==='stroke'&&entry.composite==='destination-out'));assert.deepEqual(plain(r2.api.board),masked);assert.equal(masked.elements[0].image.src,image.image.src)
+});
+
+
+test('擦过的公式原笔迹按可见载体圈选，不能复活被遮掉的语义原笔迹',()=>{
+ const handwriting={mode:'math',reviewedValue:'y=ax',strokes:[[[10,10],[110,10]]]},r=runtime([{...rect,mathDisplay:'ink',mathHandwriting:handwriting}]);r.api.drawing.erase({x:220,y:178});r.api.graphics.lasso([{x:80,y:80},{x:420,y:80},{x:420,y:300},{x:80,y:300}]);const slices=plain(r.api.graphics.slices);assert.equal(slices.length,1);assert.equal(slices[0].visual,true);assert.deepEqual(slices[0].inside,[]);assert.ok(slices[0].original.erasures.length);assert.deepEqual(slices[0].original.mathHandwriting,handwriting)
+});
+
+test('带擦痕的低分辨率公式裁剪先保留可见孔洞，新PNG尺寸与裁剪坐标一致',async()=>{
+ const r=runtime([graphicFixture()]);r.api.drawing.erase({x:130,y:120});const before=plain(r.api.board);r.context.cropSource=plain(r.api.board.elements[0]);r.context.cropRegion=[{x:120,y:110},{x:140,y:110},{x:140,y:130},{x:120,y:130}];const pending=r.evaluate('clipFormulaOutside(cropSource,cropRegion)');r.releaseImages();const remaining=plain(await pending);assert.equal(remaining.length,1);const e=remaining[0];assert.ok(e.image.width>3&&e.image.height>2);assert.equal(e.erasures,undefined);assert.equal(e.formulaGraphic.semanticStatus,'needs-review');assert.equal(e.formulaGraphic.originalImage.width,3);assert.equal(boardDiagnostics({version:1,elements:[e]}).length,0);assert.deepEqual(plain(r.api.board),before)
+});
+
+test('箭头端点方向翻转后擦痕保持从起点出发的比例，SVG和取样不镜像串位',()=>{
+ const arrow={id:'directed',type:'arrow',x:100,y:100,width:300,height:160,text:'',stroke:'#2563eb'},r=runtime([arrow]);r.api.drawing.erase({x:175,y:140});const masks=plain(r.api.board.elements[0].erasures);assert.ok(surfaceErased({erasures:masks},[.25,.25]));
+ r.api.change(()=>{const e=r.api.board.elements[0];e.x=400;e.y=260;e.width=-300;e.height=-160});const e=plain(r.api.board.elements[0]);assert.deepEqual(e.erasures,masks);assert.equal(r.evaluate("elementErasureHit(get('directed'),{x:325,y:220})"),true);assert.equal(r.evaluate("elementErasureHit(get('directed'),{x:175,y:140})"),false);assert.match(r.node('world').innerHTML,/translate\(400 260\) scale\(-300 -160\)/);
+ r.evaluate("const sampleCanvas=document.createElement('canvas');sampleCanvas.width=300;sampleCanvas.height=160;applyCanvasErasures(sampleCanvas,get('directed'))");const stroke=r.canvasLog.findLast(entry=>entry.kind==='stroke'&&entry.composite==='destination-out'),p=stroke.path[0],matrix=stroke.matrix;assert.ok(Math.abs(matrix[0]*p.x+matrix[2]*p.y+matrix[4]-225)<1e-9);assert.ok(Math.abs(matrix[1]*p.x+matrix[3]*p.y+matrix[5]-120)<1e-9);
+ r.context.child={id:'child',type:'text',x:100,y:100,width:300,height:160,text:'来源'};const copied=plain(r.evaluate("drawingCopyErasures(get('directed'),child)"));assert.ok(surfaceErased(copied,[.75,.75]));assert.equal(surfaceErased(copied,[.25,.25]),false)
+});
+
+test('绑定箭头起终点交换后局部孔洞随起点方向更新，关系身份与绑定不被拆掉',()=>{
+ const from={id:'source',type:'rect',x:100,y:100,width:100,height:100,text:''},to={...from,id:'target',x:600,y:300},line={id:'linked-direction',type:'arrow',x:100,y:100,width:500,height:200,from:'source',to:'target',text:''},r=runtime([from,to,line]),ends=r.evaluate("lineEnds(get('linked-direction'),board.elements)"),at={x:ends.a.x+(ends.b.x-ends.a.x)*.25,y:ends.a.y+(ends.b.y-ends.a.y)*.25};r.api.drawing.erase(at);const masks=plain(r.api.board.elements.find(e=>e.id===line.id).erasures);
+ r.api.change(()=>{const e=r.api.board.elements.find(e=>e.id===line.id);e.from='target';e.to='source'});const next=r.evaluate("lineEnds(get('linked-direction'),board.elements)"),hole={x:next.a.x+(next.b.x-next.a.x)*.25,y:next.a.y+(next.b.y-next.a.y)*.25};r.context.expectedHole=hole;r.context.oldHole=at;assert.equal(r.evaluate("elementErasureHit(get('linked-direction'),expectedHole)"),true);assert.equal(r.evaluate("elementErasureHit(get('linked-direction'),oldHole)"),false);const actual=plain(r.api.board.elements.find(e=>e.id===line.id));assert.deepEqual(actual.erasures,masks);assert.equal(actual.from,'target');assert.equal(actual.to,'source');assert.equal(actual.type,'arrow')
 });

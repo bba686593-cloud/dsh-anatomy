@@ -4,6 +4,8 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, symlinkSyn
 import { join } from 'node:path'
 import { createHash } from 'node:crypto'
 import { apply } from '../lib/index.js'
+import { maskedImageSource } from '../lib/png-surface.js'
+import { mcpToolResult } from '../scripts/mcp-image-content.mjs'
 import { mappingIndex, impactOf, scenarioDiagnostics } from '../lib/mapping.js'
 import { sourceInventory } from '../lib/inventory.js'
 import { humanMap, agentDigest, briefOrgan } from '../lib/digest.js'
@@ -205,3 +207,14 @@ test('有多张待校对公式时部分校对不会写出新历史或落地未�
   assert.equal(partial.ok,false);assert.ok(partial.errors.some(error=>error.code==='formula/needs-review'&&error.subject.element==='two'));assert.equal(listVersions(dir).versions.length,1);assert.equal(readFileSync(join(dir,'body.json'),'utf8'),disk)
   const complete=await call('selected_version',{apply:true,selectionRevision:read.selectionRevision,formulaReviews:draft.elements.map(e=>({element:e.id,currentMath:'y = x',visualHash:formulaHash}))});assert.equal(complete.ok,true);assert.equal(listVersions(dir).versions.length,2)
 })
+
+test('同一原PNG的不同擦痕分别计算实际视觉指纹，旧原图指纹不能校对新画面',async t=>{
+  const {dir,call}=await formulaFixture(t),initial={version:1,elements:[formulaElement('masked-one'),formulaElement('masked-two')]};assert.equal((await call('board',{board:initial})).ok,true);
+  const state=versionState(dir),draft=structuredClone(state.board);draft.elements.forEach(markFormulaPending);draft.elements[0].erasures=[{surface:'body',points:[[1/6,.25]],radius:[.1,.1]}];draft.elements[1].erasures=[{surface:'body',points:[[5/6,.75]],radius:[.1,.1]}];
+  saveVersion(dir,{body:'formulas',board:draft,baseHash:state.hash,expectedSelection:null,label:'同图不同擦痕'});const read=await call('selected_version'),disk=readFileSync(join(dir,'body.json'),'utf8'),visuals=mcpToolResult('anatomy_selected_version',read).content.filter(b=>b.type==='image');assert.equal(visuals.length,2);
+  const expected=draft.elements.map(e=>createHash('sha256').update(Buffer.from(maskedImageSource(e).split(',')[1],'base64')).digest('hex'));assert.notEqual(expected[0],expected[1]);
+  for(let index=0;index<2;index++){assert.equal(read.formulaSemantics[index].visualHash,expected[index]);assert.notEqual(expected[index],formulaHash);assert.equal(createHash('sha256').update(Buffer.from(visuals[index].data,'base64')).digest('hex'),expected[index])}
+  const stale=await call('selected_version',{apply:true,selectionRevision:read.selectionRevision,formulaReviews:draft.elements.map(e=>({element:e.id,currentMath:'y = x',visualHash:formulaHash}))});assert.equal(stale.ok,false);assert.equal(stale.error.code,'formula/review-stale');assert.equal(readFileSync(join(dir,'body.json'),'utf8'),disk);
+  const reviewed=await call('selected_version',{apply:true,selectionRevision:read.selectionRevision,formulaReviews:draft.elements.map((e,index)=>({element:e.id,currentMath:'y = x',visualHash:expected[index]}))});assert.equal(reviewed.ok,true);assert.deepEqual(versionState(dir).board.elements.map(e=>e.erasures),draft.elements.map(e=>e.erasures));assert.equal(versionState(dir).board.elements[0].image.src,formulaSource);
+  const changedState=versionState(dir),changed=structuredClone(changedState.board);changed.elements[0].erasures.push({surface:'body',points:[[.5,.25]],radius:[.1,.1]});saveVersion(dir,{body:'formulas',board:changed,baseHash:changedState.hash,expectedSelection:reviewed.selectionRevision,label:'校对后再次擦除'});const changedRead=await call('selected_version');assert.equal(changedRead.formulaSemantics[0].requiresReview,true);assert.equal(changedRead.formulaSemantics[1].requiresReview,false);assert.equal((await call('selected_version',{apply:true,selectionRevision:changedRead.selectionRevision})).error.code,'formula/review-stale');
+});

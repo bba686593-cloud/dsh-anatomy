@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto'
 import { imageDiagnostics, parseImageSource, MAX_BOARD_IMAGE_BYTES } from '../lib/images.js'
 import { programTrace } from '../lib/semantics.js'
+import { maskedImageSource } from '../lib/png-surface.js'
 
 // Presentation only: the JSON tool contract stays intact in structuredContent.
 // Inspect the returned current board, never scan files or historical versions.
@@ -29,7 +30,7 @@ export function mcpToolResult(name, value) {
       if(match){try{const element=JSON.parse(match[2]);if(element?.type==='image')elements.push({element,index,prefix:match[1]})}catch{}}
     }
   }
-  const sources=new Map(),pictures=new Map(),notes=[];let totalBytes=0
+  const sources=new Map(),pictures=new Map(),notes=[];let totalBytes=0,previewBytes=0
   for(const item of Array.isArray(elements)?elements:[]){
     const element=digestLines?item.element:item
     if(element?.type!=='image'||typeof element.image?.src!=='string')continue
@@ -52,11 +53,14 @@ export function mcpToolResult(name, value) {
     // A duplicate resource may have different alt/dimensions on another node;
     // validate the node independently before attaching its visual content.
     if(record.valid&&!imageDiagnostics(image).length&&!programTrace(image.alt)){
-      if(!pictures.has(record.hash))pictures.set(record.hash,{...record,nodes:[]})
-      pictures.get(record.hash).nodes.push({element:element.id,alt:image.alt})
+      try{
+        const visual=maskedImageSource(element),parsed=visual===src?record.parsed:parseImageSource(visual),data=visual===src?record.data:visual.slice(visual.indexOf(',')+1),hash=visual===src?record.hash:createHash('sha256').update(Buffer.from(data,'base64')).digest('hex');
+        if(!pictures.has(hash)){pictures.set(hash,{parsed,data,hash,nodes:[]});previewBytes+=parsed.bytes}
+        pictures.get(hash).nodes.push({element:element.id,alt:image.alt,...(visual!==src?{erased:true,sourceSha256:record.hash}:{})})
+      }catch(error){notes.push({element:element.id,note:'局部擦除后的图片暂时无法预览，未附加原图。'+error.message})}
     }else notes.push({element:element.id,note:'图片数据或说明未通过校验，未附加视觉内容。'})
   }
-  if(totalBytes>MAX_BOARD_IMAGE_BYTES){pictures.clear();notes.push({note:'当前画板内嵌图片超过 8 MiB，未附加视觉内容；完整数据保留在 structuredContent。'})}
+  if(totalBytes>MAX_BOARD_IMAGE_BYTES||previewBytes>MAX_BOARD_IMAGE_BYTES){pictures.clear();notes.push({note:'当前画板内嵌图片或擦除预览超过 8 MiB，未附加视觉内容；完整数据保留在 structuredContent。'})}
   const shorten=function(key,next){if(['image','originalImage'].includes(key)&&next&&typeof next==='object'&&typeof next.src==='string'){let record=sources.get(next.src);if(!record){try{const parsed=parseImageSource(next.src),hash=createHash('sha256').update(Buffer.from(next.src.slice(next.src.indexOf(',')+1),'base64')).digest('hex');record={summary:'[原始图形 '+parsed.width+'×'+parsed.height+'；sha256:'+hash+'；完整 src 保留在 structuredContent]'}}catch{record={summary:'[原图完整数据保留在 structuredContent]'}}}return {...next,src:record.summary}}return next}
   let displayed=value
   if(digestLines){
