@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import {readFileSync} from 'node:fs'
 import vm from 'node:vm'
 import {boardDiagnostics,elementMathEntries,elementProgram} from '../lib/board.js'
-import {readingRoutes,partTitle,relationName} from '../lib/reading.js'
+import {readingRoutes,partTitle,relationName,hasRelationLabel} from '../lib/reading.js'
 import {humanText} from '../lib/semantics.js'
 
 const client=readFileSync(new URL('../lib/board-reading-client.js',import.meta.url),'utf8')
@@ -19,7 +19,7 @@ function runtime(initial=fixture(),options={}){
   const context={board:structuredClone(initial),A:{body:{oneline:'工程目的。'},organs:[],flows:[]},routeId:null,readingIndex:-1,editReading:false,tab:'human',selected:new Set(),structuredClone,Number,JSON,key:'anatomy-board:baseline',
     $:node,get:id=>context.board.elements.find(e=>e.id===id),chosen:()=>context.board.elements.find(e=>context.selected.has(e.id)),document:{body:node('body')},
     esc:s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])),
-    boardDiagnostics,elementMathEntries,elementProgram,readingRoutes,partTitle,relationName,humanText,katex:{},formulaMarkup:tex=>({html:'<math>'+String(tex)+'</math>'}),
+    boardDiagnostics,elementMathEntries,elementProgram,readingRoutes,partTitle,relationName,hasRelationLabel,humanText,katex:{},formulaMarkup:tex=>({html:'<math>'+String(tex)+'</math>'}),
     localStorage:{getItem:key=>storage.get(key),setItem:(key,value)=>storage.set(key,value),removeItem:key=>storage.delete(key)},status(){calls.push(['status'])},message(text){calls.push(['message',text])},canvasDirty:false,canvasDraftPending(){return context.canvasDirty},
     flushField(){},setTool(tool){calls.push(['tool',tool])},focusPart(id){context.selected=new Set([id]);calls.push(['focus',id]);context.renderReading()},
     openProgram(id){calls.push(['program',id])},openPaperEditor(id){calls.push(['human',id])},renderScene(){calls.push(['scene'])},

@@ -28,7 +28,7 @@ async function dispatch(msg){
   const error=(code,message)=>send({jsonrpc:'2.0',id,error:{code,message}}), result=value=>send({jsonrpc:'2.0',id,result:value})
   if(msg.method==='initialize'){
     if(initialized)return error(-32600,'Already initialized')
-    initialized=true;return result({protocolVersion:protocols.includes(msg.params?.protocolVersion)?msg.params.protocolVersion:protocols[0],capabilities:{tools:{}},serverInfo:{name:'anatomy',version},instructions:'Use anatomy_selected_version before implementation. Locate anatomy-* in the user project and pass dir. The page selection is authoritative; never apply every historical version. Re-read selectionRevision before applying. Saving intent does not prove source implementation.'})
+    initialized=true;return result({protocolVersion:protocols.includes(msg.params?.protocolVersion)?msg.params.protocolVersion:protocols[0],capabilities:{tools:{}},serverInfo:{name:'anatomy',version},instructions:'Anatomy is a shared canvas for human–AI engineering work. Read the relevant project and current visual edits, then choose imagery, sketches, prose, mathematics or spatial forms to answer the user’s question; do not default to uniform boxes and arrows. Blank requirements need no structure model. Continue locally from the user’s marks and preserve unrelated content. Use anatomy_selected_version before implementation. Locate anatomy-* in the user project and pass dir. The page selection is authoritative; never apply every historical version. Re-read selectionRevision before applying. Saving intent does not prove source implementation.'})
   }
   if(msg.method==='ping')return result({})
   if(!ready)return error(-32002,'Server not initialized')

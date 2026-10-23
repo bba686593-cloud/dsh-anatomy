@@ -15,6 +15,16 @@ import vm from 'node:vm'
 const rect=(id,x=0)=>({id,type:'rect',x,y:0,width:100,height:80,text:'处理输入',math:'y = f(x)',implementation:{language:'JavaScript',code:'return input;',extra:{preserve:true}}})
 const board=()=>({version:1,elements:[rect('a'),rect('b',300),{id:'link',type:'arrow',x:50,y:40,width:300,height:0,from:'a',to:'b'}]})
 async function fixture(t){const root=mkdtempSync('/tmp/anatomy-board-');t.after(()=>rmSync(root,{recursive:true,force:true}));const ts=new Map();apply({tools:{register(d){ts.set(d.name,d);return()=>{}}}},{rootDir:root,autoServe:false});const dir=join(root,'anatomy-model');const call=(n,args={})=>ts.get('anatomy_'+n).execute({dir,repoRoot:root,...args});assert.equal((await call('init',{body:'model',title:'工程画板',oneline:'用图形描述工程。'})).ok,true);return {root,dir,call}}
+test('新画板携带结构分类也保持空白，后续模型批量写入不会代画卡片和箭头',async t=>{
+  const {call,dir}=await fixture(t)
+  const created=await call('init',{force:true,title:'共同设计',oneline:'讨论画板的使用方式。',systems:[{id:'workspace',name:'工作区域'}]})
+  assert.equal(created.ok,true)
+  assert.deepEqual(created.body.board,{version:1,layout:{mode:'manual'},elements:[]})
+  const saved=await call('scaffold',{organs:[{id:'canvas',name:'画板',gist:'保留讨论内容。',status:'planned',systems:['workspace']}]})
+  assert.equal(saved.ok,true,JSON.stringify(saved))
+  assert.deepEqual((await call('board')).board,created.body.board)
+  assert.deepEqual(JSON.parse(readFileSync(join(dir,'body.json'))).board,created.body.board)
+})
 test('无系统、无器官也可创建、渲染和反查自由画板',async t=>{const {call,root}=await fixture(t);writeFileSync(join(root,'part.js'),'export function processInput(input) { return input; }');const b=board();b.elements[0].anchors=[{file:'part.js',symbol:'processInput',role:'implementation',reason:'处理输入'}];assert.equal((await call('board',{board:b})).ok,true);const r=await call('board',{element:'a'});assert.equal(r.program.implementation.code,'return input;');assert.match(r.element.anchors[0].sha256,/^[a-f0-9]{64}$/);assert.equal((await call('render')).ok,true);const body={title:'工程画板',board:r.board};assert.equal(mappingIndex(body,[],[]).files[0].refs[0].kind,'element');assert.equal(impactOf(body,[],[],{files:['part.js']}).elements[0].id,'a');assert.ok(humanMap(body,[],[]).includes('y = f(x)'));assert.ok(!humanMap(body,[],[]).includes('return input'));assert.ok(agentDigest(body,[],[]).includes('return input;'))})
 test('图形种类完整，未知字段在修改包内原样保留',()=>{const b={version:1,elements:BOARD_TYPES.map((type,i)=>({...rect('e'+i),type,...(['pen','polygon'].includes(type)?{points:[[0,0],[1,0],[.5,1]]}:{}),...(type==='image'?{image:{src:'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAMAAAACCAIAAAASFvFNAAAAFUlEQVR4nGN0S1nAwMDAwMDAxAADABcWAU7Ylb4oAAAAAElFTkSuQmCC',alt:'工程示意图',width:3,height:2}}:{})}))};assert.deepEqual(boardDiagnostics(b),[]);const c=structuredClone(b);c.elements[0].text='新的人的意图';const pack=boardBundle(b,c,'model','baseline');assert.equal(pack.baseHash,'baseline');assert.deepEqual(pack.edits[0].patch.board,c);assert.deepEqual(boardBundle(c,c,'model','baseline').edits,[])})
 test('缺引用、重复标识、非法几何、代码混入人读均阻断整包写入',async t=>{const {call,dir}=await fixture(t);await call('board',{board:board()});const baseline=readFileSync(join(dir,'body.json'),'utf8');for(const mutate of [b=>b.elements.push({...rect('a')}),b=>b.elements[0].width=-1,b=>b.elements[0].text='const x = 1',b=>b.elements[0].targets=[{kind:'organ',id:'missing'}],b=>b.elements[2].to='gone',b=>b.elements[0].anchors=['bad'],b=>b.elements[0].fill='#abcde',b=>b.elements.push(null)]){const b=board();mutate(b);assert.equal((await call('board',{board:b,force:true,strict:false})).ok,false);assert.equal(readFileSync(join(dir,'body.json'),'utf8'),baseline)}})
@@ -267,16 +277,28 @@ test('未确认的笔迹、模式和校对结果经过关闭和页面重开仍�
 
 test('工程导读沿作者步骤定位，可回到上一步且不会修改工程数据',()=>{
   const b=board();b.reading={summary:'把输入变成输出。',steps:[{element:'b',title:'先看输出',description:'先理解交付结果。'},{element:'a',title:'再找输入',description:'沿依赖回看入口。'}]};const r=runtime(b);
-  assert.deepEqual([...r.api.selected],['b']);r.api.goReadingStep(1);assert.deepEqual([...r.api.selected],['a']);assert.match(r.node('reading-card-title').textContent,/再找输入/);assert.ok(!r.node('reading-card-description').innerHTML.includes('return input;'));r.api.goReadingStep(0);assert.deepEqual([...r.api.selected],['b']);assert.equal(r.api.bundle().edits.length,0);
+  assert.deepEqual([...r.api.selected],[]);assert.equal(r.node('reading-card').hidden,true);r.api.goReadingStep(0);assert.deepEqual([...r.api.selected],['b']);r.api.goReadingStep(1);assert.deepEqual([...r.api.selected],['a']);assert.match(r.node('reading-card-title').textContent,/再找输入/);assert.ok(!r.node('reading-card-description').innerHTML.includes('return input;'));r.api.goReadingStep(0);assert.deepEqual([...r.api.selected],['b']);assert.equal(r.api.bundle().edits.length,0);
   r.fire('reading-content','click',{target:{closest:q=>q==='[data-guide-action]'?{dataset:{guideAction:'edit'}}:null}});r.fire('reading-content','input',{target:{dataset:{guideField:'steps.0.description'},value:'结果应满足新的边界。'}});r.fire('reading-content','click',{target:{closest:q=>q==='[data-guide-action]'?{dataset:{guideAction:'confirm'}}:null}});assert.equal(r.api.bundle().edits[0].patch.board.reading.steps[0].description,'结果应满足新的边界。');r.api.undo();assert.equal(r.api.board.reading.steps[0].description,'先理解交付结果。')
 })
 test('导读引用和人读语言必须通过检查，删除图元清理步骤且可撤销',async t=>{
   const {call}=await fixture(t),b=board();b.reading={steps:[{element:'a',title:'看入口',description:'入口接收数据。'}]};assert.equal((await call('board',{board:b})).ok,true);
   for(const reading of [null,{steps:[{element:'gone'}]},{steps:[{element:'a',description:'const x = 1;'}]},{steps:[{element:'a',title:42}]}]){assert.equal((await call('board',{board:{...b,reading}})).ok,false)}
-  const r=runtime(b);r.api.remove();assert.equal(r.api.board.reading.steps.length,0);r.api.undo();assert.equal(r.api.board.reading.steps[0].element,'a');assert.deepEqual(boardDiagnostics(r.api.board),[])
+  const r=runtime(b);r.api.select('a');r.api.remove();assert.equal(r.api.board.reading.steps.length,0);r.api.undo();assert.equal(r.api.board.reading.steps[0].element,'a');assert.deepEqual(boardDiagnostics(r.api.board),[])
 })
 
-test('自由布局选择不被刷新状态覆盖，撤销恢复自动布局',()=>{const r=runtime(board());r.node('manual-layout').checked=true;r.fire('manual-layout','change');assert.equal(r.api.board.layout.mode,'manual');assert.equal(r.node('manual-layout').checked,true);r.api.undo();assert.equal(r.node('manual-layout').checked,false)})
+test('显式自动布局可切换自由布局，撤销恢复自动模式',()=>{const r=runtime({...board(),layout:{mode:'auto'}});assert.equal(r.node('manual-layout').checked,false);r.node('manual-layout').checked=true;r.fire('manual-layout','change');assert.equal(r.api.board.layout.mode,'manual');assert.equal(r.node('manual-layout').checked,true);r.api.undo();assert.equal(r.node('manual-layout').checked,false)})
+test('没有布局字段时保留草图叠画和图上注释，显式排布仍可撤销',()=>{
+  const b={version:1,elements:[
+    {id:'outline',type:'polygon',x:80,y:90,width:240,height:160,points:[[0,.1],[1,0],[.9,1],[.1,.9]],fill:'#eff6ff'},
+    {id:'note',type:'text',x:120,y:115,width:180,height:50,text:'这部分希望变圆。'},
+    {id:'ink',type:'pen',x:95,y:105,width:200,height:100,points:[[0,.6],[.5,0],[1,.8]]}
+  ]},before=JSON.stringify(b),r=runtime(b)
+  assert.equal(JSON.stringify(r.api.board),before)
+  assert.equal(r.node('manual-layout').checked,true)
+  assert.deepEqual([...r.api.selected],[])
+  r.fire('auto-layout','click');assert.notEqual(JSON.stringify(r.api.board),before)
+  r.api.undo();assert.equal(JSON.stringify(r.api.board),before)
+})
 
 
 test('公式库默认独立新建，多次生成保留原有表达和程序映射',async()=>{

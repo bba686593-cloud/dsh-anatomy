@@ -1,12 +1,12 @@
 {
   "name": "anatomy",
-  "version": "0.21.0",
-  "description": "二维工程画板与 GPU 三维空间：共用图元、程序映射、选定历史版本与严格实现校验。",
+  "version": "0.22.0",
+  "description": "人和 AI 在同一张画板上解释工程、圈改需求，并对照源码实现。",
   "skills": "./skills/",
   "mcpServers": "./.mcp.json",
   "interface": {
     "displayName": "Anatomy 工程画板",
-    "shortDescription": "在工程内保存画板，按选定版本严格对照实现",
+    "shortDescription": "图片、草图与三维结构，和 AI 在画板上共同开发",
     "category": "Productivity"
   }
 }

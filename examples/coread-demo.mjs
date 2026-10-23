@@ -2,16 +2,18 @@
 import { dirname, resolve, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { apply } from '../lib/index.js'
+import { boardFor } from '../lib/board.js'
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), '..')
-const dir = resolve(process.argv[2] || join(repo, 'anatomy-coread-demo'))
+const args = process.argv.slice(2), staticOnly = args.includes('--static')
+const dir = resolve(args.find(arg => arg !== '--static') || join(repo, 'anatomy-coread-demo'))
 const tools = new Map()
-apply({ tools: { register(def) { tools.set(def.name, def); return () => {} } } }, { rootDir: repo })
+apply({ tools: { register(def) { tools.set(def.name, def); return () => {} } } }, { rootDir: repo, autoServe: !staticOnly, autoOpen: !staticOnly })
 async function call(name, args = {}) {
   const result = await tools.get('anatomy_' + name).execute({ dir, repoRoot: repo, ...args })
   if (!result.ok) throw new Error(JSON.stringify(result, null, 2))
   return result
 }
-await call('init', { body: 'coread-demo', title: 'Anatomy 如何把工程讲清楚', oneline: '从读取工程事实，到检查、反查和人机共同阅读。', systems: [
+const initialized = await call('init', { body: 'coread-demo', title: 'Anatomy 如何把工程讲清楚', oneline: '从读取工程事实，到检查、反查和人机共同阅读。', systems: [
   { id: 'input', name: '接入与存档', gist: '接住请求并读取工程事实', alt: 0 },
   { id: 'reason', name: '检查与解释', gist: '检查证据并说明工程关系', alt: 0.5 },
   { id: 'delivery', name: '共同阅读', gist: '把同一份事实交给人和 AI', alt: 1 },
@@ -40,7 +42,10 @@ organs.find(o=>o.id==='mapping').math='受影响集合＝沿数据方向可达�
 organs.find(o=>o.id==='mapping').rules=[{id:'response-time',statement:'工程反查应及时返回',metric:'响应耗时',relation:'≤',limit:20,unit:'毫秒'}]
 organs.find(o=>o.id==='mapping').anchors.push(anchor('lib/semantics.js','temporalModel','implementation','以有向传递耗时计算路程'))
 organs.find(o=>o.id==='check').anchors.push(anchor('lib/verification.js','evaluateVerification','implementation','根据版本和测量证据核验上层数值意图'))
-await call('scaffold', { organs, flows, scenarios: [
+// This particular example chooses a structural map. Clearing only the local
+// fallback input requests that view explicitly; init itself stays a blank canvas.
+const board = boardFor({ ...initialized.body, board: undefined }, organs, flows)
+await call('scaffold', { organs, flows, board, scenarios: [
   { id: 'change', name: '准备修改一个工程文件', trigger: 'AI 收到改动需求', steps: [
     { organ: 'entry', action: '确定目标工程与读取请求' },
     { organ: 'state', flow: 'load', action: '读取职责、关系和定位' },
